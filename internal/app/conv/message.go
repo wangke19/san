@@ -590,10 +590,13 @@ var (
 
 	queueSelectedBadgeStyle = lipgloss.NewStyle().
 				Foreground(kit.CurrentTheme.TextBright).
+				Background(kit.CurrentTheme.Primary).
 				Bold(true)
 
 	queueSelectedContentStyle = lipgloss.NewStyle().
-					Foreground(kit.CurrentTheme.Text)
+					Foreground(kit.CurrentTheme.TextBright).
+					Background(kit.CurrentTheme.Primary).
+					Bold(true)
 
 	queueOverflowStyle = lipgloss.NewStyle().
 				Foreground(kit.CurrentTheme.Muted).
@@ -627,9 +630,6 @@ func RenderQueuePreview(items []QueuePreviewItem, selectedIdx, width int) string
 		content := truncateQueueContent(item.Content, width-8)
 		if item.HasImages {
 			content = PendingImageStyle.Render("[Image] ") + content
-		}
-		if item.Waiting {
-			content = queueWaitingStyle.Render("waiting ") + content
 		}
 
 		if isSelected {

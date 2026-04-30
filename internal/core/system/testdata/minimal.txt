@@ -55,6 +55,7 @@ Before spawning an Agent, estimate the effort. Use the lightest option:
 Key rules:
 - Read before modifying — never change code you haven't read.
 - Run independent tool calls in parallel.
+- Do not batch dependent tool calls. If you need Read output to make an Edit, call Read first, wait for the result, then call Edit in a later assistant turn.
 - Edit for updates, Write for new files only.
 - Bash runs in the session working directory — never prepend `cd <cwd> &&`.
 - Use relative paths inside the session directory. Absolute paths only for targets outside it.

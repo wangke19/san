@@ -242,7 +242,7 @@ func (m *model) handleInputKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 
 	case tea.KeyUp:
 		if m.userInput.Textarea.Line() == 0 {
-			if m.userInput.Queue.PendingCount() > 0 {
+			if m.userInput.Queue.Len() > 0 {
 				m.userInput.EnterQueueSelection()
 				return nil, true
 			}
@@ -253,6 +253,10 @@ func (m *model) handleInputKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case tea.KeyDown:
 		lines := strings.Count(m.userInput.Textarea.Value(), "\n")
 		if m.userInput.Textarea.Line() == lines {
+			if m.userInput.Queue.Len() > 0 {
+				m.userInput.EnterQueueSelection()
+				return nil, true
+			}
 			m.userInput.HistoryDown()
 			return nil, true
 		}

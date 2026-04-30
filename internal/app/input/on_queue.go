@@ -92,6 +92,13 @@ func (q *Queue) WaitingCount() int {
 	return count
 }
 
+func (q *Queue) LastIndex() int {
+	if len(q.items) == 0 {
+		return -1
+	}
+	return len(q.items) - 1
+}
+
 func (q *Queue) LastPendingIndex() int {
 	for i := len(q.items) - 1; i >= 0; i-- {
 		if !q.items[i].SentToInbox {
@@ -123,32 +130,31 @@ func (q *Queue) MarkSentToInbox(idx int) {
 func (q *Queue) Clear() { q.items = nil }
 
 // HandleQueueSelectKey handles keys when a queue item is selected.
-// Only Up, Down, Enter, and Escape are intercepted; all other keys pass
+// Only Up, Down, Enter, Escape, and Ctrl+C are intercepted; all other keys pass
 // through to the textarea for normal in-place editing.
 func (m *Model) HandleQueueSelectKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if m.Queue.SelectIdx < 0 {
 		return nil, false
 	}
 
+	m.SaveCurrentQueueEdit()
+
 	switch msg.Type {
 	case tea.KeyUp:
 		if m.Queue.SelectIdx > 0 {
-			m.SaveCurrentQueueEdit()
-			qLen := m.Queue.Len()
-			if qLen == 0 {
-				m.ExitQueueSelection()
-			} else {
-				m.Queue.SelectIdx = min(m.Queue.SelectIdx, qLen) - 1
-				m.LoadQueueItemIntoTextarea()
-			}
+			m.Queue.SelectIdx--
+			m.LoadQueueItemIntoTextarea()
+		} else {
+			m.ExitQueueSelection()
+			m.HistoryUp()
 		}
 		return nil, true
 
 	case tea.KeyDown:
-		m.SaveCurrentQueueEdit()
 		qLen := m.Queue.Len()
-		if qLen == 0 || m.Queue.SelectIdx >= qLen-1 {
+		if m.Queue.SelectIdx >= qLen-1 {
 			m.ExitQueueSelection()
+			m.HistoryDown()
 		} else {
 			m.Queue.SelectIdx++
 			m.LoadQueueItemIntoTextarea()
@@ -156,19 +162,41 @@ func (m *Model) HandleQueueSelectKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 
 	case tea.KeyEnter, tea.KeyEsc:
-		m.SaveCurrentQueueEdit()
 		m.ExitQueueSelection()
+		return nil, true
+
+	case tea.KeyCtrlC:
+		m.DeleteCurrentQueueItem()
 		return nil, true
 	}
 
 	return nil, false
 }
 
+// DeleteCurrentQueueItem removes the selected queue item and navigates to the next.
+func (m *Model) DeleteCurrentQueueItem() {
+	if m.Queue.SelectIdx < 0 || m.Queue.SelectIdx >= m.Queue.Len() {
+		return
+	}
+	m.Queue.UpdateAt(m.Queue.SelectIdx, "", nil)
+
+	newLen := m.Queue.Len()
+	if newLen == 0 {
+		m.ExitQueueSelection()
+		return
+	}
+
+	if m.Queue.SelectIdx >= newLen {
+		m.Queue.SelectIdx = newLen - 1
+	}
+	m.LoadQueueItemIntoTextarea()
+}
+
 // EnterQueueSelection transitions into queue selection mode.
 // Stashes current input and loads the last queue item into the textarea.
 func (m *Model) EnterQueueSelection() {
 	m.Queue.Stashed = m.Textarea.Value()
-	m.Queue.SelectIdx = m.Queue.LastPendingIndex()
+	m.Queue.SelectIdx = m.Queue.LastIndex()
 	if m.Queue.SelectIdx < 0 {
 		m.Queue.Stashed = ""
 		return
@@ -204,10 +232,6 @@ func (m *Model) SaveCurrentQueueEdit() {
 func (m *Model) LoadQueueItemIntoTextarea() {
 	item, ok := m.Queue.At(m.Queue.SelectIdx)
 	if !ok {
-		return
-	}
-	if item.SentToInbox {
-		m.ExitQueueSelection()
 		return
 	}
 	m.Textarea.SetValue(item.Content)

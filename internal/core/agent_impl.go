@@ -35,6 +35,16 @@ type agent struct {
 	closed atomic.Bool // guards outbox writes after close
 }
 
+type agentToolTask struct {
+	call ToolCall
+	tool Tool
+}
+
+type toolTaskOutput struct {
+	content string
+	err     error
+}
+
 func (a *agent) ID() string            { return a.id }
 func (a *agent) System() System        { return a.system }
 func (a *agent) Tools() Tools          { return a.tools }
@@ -264,17 +274,13 @@ func estimatePromptTokens(lastInputTokens, lastPromptTextLen, currentPromptTextL
 
 // execTools runs tool calls in three phases:
 //  1. Resolve — emit PreTool event, look up tool
-//  2. Execute — parallel when multiple tools, direct when single
+//  2. Execute — parallel for read-only batches, sequential when side effects are possible
 //  3. Record results — sequential, in original call order
 //
 // Permission checking is handled by the tool decorator (tool.WithPermission),
 // not by the agent. See docs/permission.md.
 func (a *agent) execTools(ctx context.Context, calls []ToolCall) int {
-	type task struct {
-		call ToolCall
-		tool Tool
-	}
-	var tasks []task
+	var tasks []agentToolTask
 	for _, tc := range calls {
 		if ctx.Err() != nil {
 			break
@@ -285,47 +291,25 @@ func (a *agent) execTools(ctx context.Context, calls []ToolCall) int {
 			a.appendResult(tc, fmt.Sprintf("unknown tool: %s", tc.Name), true)
 			continue
 		}
-		tasks = append(tasks, task{tc, t})
+		tasks = append(tasks, agentToolTask{tc, t})
 	}
 	if len(tasks) == 0 {
 		return 0
 	}
 
-	// Phase 2: Execute (parallel when multiple, direct when single)
-	type output struct {
-		content string
-		err     error
-	}
-	results := make([]output, len(tasks))
-	if len(tasks) == 1 {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("core/agent: tool %s panicked: %v\n%s", tasks[0].call.Name, r, debug.Stack())
-					results[0] = output{"", fmt.Errorf("tool %s panicked: %v", tasks[0].call.Name, r)}
-				}
-			}()
-			params, _ := ParseToolInput(tasks[0].call.Input)
-			execCtx := WithToolCallID(ctx, tasks[0].call.ID)
-			content, err := tasks[0].tool.Execute(execCtx, params)
-			results[0] = output{content, err}
-		}()
+	// Phase 2: Execute (parallel only for read-only batches)
+	results := make([]toolTaskOutput, len(tasks))
+	if len(tasks) == 1 || !canExecuteToolBatchInParallel(tasks) {
+		for i, t := range tasks {
+			results[i] = executeToolTask(ctx, t)
+		}
 	} else {
 		var wg sync.WaitGroup
 		for i, t := range tasks {
 			wg.Add(1)
-			go func(i int, t task) {
+			go func(i int, t agentToolTask) {
 				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("core/agent: tool %s panicked: %v\n%s", t.call.Name, r, debug.Stack())
-						results[i] = output{"", fmt.Errorf("tool %s panicked: %v", t.call.Name, r)}
-					}
-				}()
-				params, _ := ParseToolInput(t.call.Input)
-				execCtx := WithToolCallID(ctx, t.call.ID)
-				content, err := t.tool.Execute(execCtx, params)
-				results[i] = output{content, err}
+				results[i] = executeToolTask(ctx, t)
 			}(i, t)
 		}
 		wg.Wait()
@@ -349,6 +333,37 @@ func (a *agent) execTools(ctx context.Context, calls []ToolCall) int {
 		}))
 	}
 	return toolUses
+}
+
+func executeToolTask(ctx context.Context, t agentToolTask) (result toolTaskOutput) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("core/agent: tool %s panicked: %v\n%s", t.call.Name, r, debug.Stack())
+			result = toolTaskOutput{"", fmt.Errorf("tool %s panicked: %v", t.call.Name, r)}
+		}
+	}()
+	params, _ := ParseToolInput(t.call.Input)
+	execCtx := WithToolCallID(ctx, t.call.ID)
+	content, err := t.tool.Execute(execCtx, params)
+	return toolTaskOutput{content, err}
+}
+
+func canExecuteToolBatchInParallel(tasks []agentToolTask) bool {
+	for _, t := range tasks {
+		if !isReadOnlyToolCall(t.call.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadOnlyToolCall(name string) bool {
+	switch name {
+	case "Read", "Glob", "Grep", "WebFetch", "WebSearch", "LSP", "TaskOutput", "AgentOutput":
+		return true
+	default:
+		return false
+	}
 }
 
 // CompactMaxTokens is the max output tokens for compaction LLM calls.

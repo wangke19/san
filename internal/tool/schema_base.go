@@ -198,6 +198,7 @@ var editToolSchema = core.ToolSchema{
 
 Usage:
 - You must use your Read tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
+- If you need fresh file contents before editing, call Read and wait for its result before calling Edit. Do not call Read and Edit for the same target in the same assistant message.
 - When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. Never include any part of the line number prefix in the old_string or new_string.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.

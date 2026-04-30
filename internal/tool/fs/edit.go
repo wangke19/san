@@ -122,17 +122,17 @@ func (t *EditTool) ExecuteApproved(ctx context.Context, params map[string]any, c
 
 	replaceAll := tool.GetBool(params, "replace_all")
 
-	// Verify old_string still exists (file may have changed since approval)
+	// Verify old_string still exists in the current file content.
 	occurrences := strings.Count(oldContent, oldString)
 	if occurrences == 0 {
-		return toolresult.NewErrorResult(t.Name(), "old_string not found in file (file may have been modified since approval)")
+		return toolresult.NewErrorResult(t.Name(), "old_string not found in current file. Re-read the target lines and retry with exact current text.")
 	}
 
 	// When not replacing all, verify the string is still unique to avoid
 	// applying the edit to a different location than what the user approved.
 	if !replaceAll && occurrences > 1 {
 		return toolresult.NewErrorResult(t.Name(),
-			fmt.Sprintf("old_string is no longer unique in file (%d occurrences found — file may have been modified since approval)", occurrences))
+			fmt.Sprintf("old_string is not unique in current file (%d occurrences found). Provide more surrounding context or use replace_all=true.", occurrences))
 	}
 
 	// Perform replacement
