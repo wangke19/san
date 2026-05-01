@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.15.11] - 2026-05-01
+
+### Changed
+
+- Refactor: rename `continueagent` to `continuation` and remove deferred tool
+
 ## [v1.15.10] - 2026-05-01
 
 ### Fixed
