@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.15.12] - 2026-05-02
+
+### Added
+
+- Permission system with mode-based access control for agents and tools
+- Subagent matching and routing logic
+- Permission documentation (`docs/claude-permission.md`, `docs/gen-permission.md`)
+
+### Changed
+
+- Refactor subagent executor, loader, and registry for improved type safety
+- Improve bash AST parsing and setting merger
+
 ## [v1.15.11] - 2026-05-01
 
 ### Added
