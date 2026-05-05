@@ -3,6 +3,14 @@
 All notable changes to Gen Code are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [v1.17.1] - 2026-05-05
+
+### Added
+- Manual feature documentation for v1.17
+
+### Changed
+- Remove dead code and modernize Go patterns
+
 ## [v1.17.0] - 2026-05-04
 
 ### Added
