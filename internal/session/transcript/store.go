@@ -11,44 +11,44 @@ import (
 )
 
 type StartCommand struct {
-	TranscriptID string
-	ProjectID    string
-	Cwd          string
-	Provider     string
-	Model        string
-	ParentID     string
-	Time         time.Time
+	SessionID string
+	ProjectID string
+	Cwd       string
+	Provider  string
+	Model     string
+	ParentID  string
+	Time      time.Time
 }
 
 type AppendMessageCommand struct {
-	TranscriptID string
-	MessageID    string
-	ParentID     string
-	Time         time.Time
-	Cwd          string
-	GitBranch    string
-	AgentID      string
-	IsSidechain  bool
-	Role         string
-	Content      []ContentBlock
+	SessionID   string
+	MessageID   string
+	ParentID    string
+	Time        time.Time
+	Cwd         string
+	GitBranch   string
+	AgentID     string
+	IsSidechain bool
+	Role        string
+	Content     []ContentBlock
 }
 
 type PatchStateCommand struct {
-	TranscriptID string
-	Time         time.Time
-	Ops          []PatchOp
+	SessionID string
+	Time      time.Time
+	Ops       []PatchOp
 }
 
 type CompactCommand struct {
-	TranscriptID string
-	Time         time.Time
-	BoundaryID   string
+	SessionID  string
+	Time       time.Time
+	BoundaryID string
 }
 
 type ForkCommand struct {
-	SourceTranscriptID string
-	NewTranscriptID    string
-	Time               time.Time
+	SourceSessionID string
+	NewSessionID    string
+	Time            time.Time
 }
 
 type ListOptions struct {

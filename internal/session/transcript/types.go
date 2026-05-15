@@ -53,10 +53,10 @@ type TrackerTaskView struct {
 }
 
 type ListItem struct {
-	TranscriptID string
-	FullPath     string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	SessionID string
+	FullPath  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 
 	Title        string
 	LastPrompt   string

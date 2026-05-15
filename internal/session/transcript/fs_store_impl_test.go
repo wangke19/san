@@ -15,39 +15,39 @@ func TestFileStoreStartAppendListLoad(t *testing.T) {
 
 	now := time.Date(2026, 4, 6, 16, 0, 0, 0, time.UTC)
 	if err := store.Start(context.Background(), StartCommand{
-		TranscriptID: "tx-1",
-		ProjectID:    "proj-1",
-		Cwd:          "/tmp/project",
-		Provider:     "openai",
-		Model:        "gpt-test",
-		Time:         now,
+		SessionID: "tx-1",
+		ProjectID: "proj-1",
+		Cwd:       "/tmp/project",
+		Provider:  "openai",
+		Model:     "gpt-test",
+		Time:      now,
 	}); err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
 	if err := store.AppendMessage(context.Background(), AppendMessageCommand{
-		TranscriptID: "tx-1",
-		MessageID:    "m1",
-		Time:         now.Add(time.Second),
-		Role:         "user",
-		Content:      []ContentBlock{{Type: "text", Text: "hello"}},
+		SessionID: "tx-1",
+		MessageID: "m1",
+		Time:      now.Add(time.Second),
+		Role:      "user",
+		Content:   []ContentBlock{{Type: "text", Text: "hello"}},
 	}); err != nil {
 		t.Fatalf("AppendMessage(user): %v", err)
 	}
 	if err := store.AppendMessage(context.Background(), AppendMessageCommand{
-		TranscriptID: "tx-1",
-		MessageID:    "m2",
-		ParentID:     "m1",
-		Time:         now.Add(2 * time.Second),
-		Role:         "assistant",
-		Content:      []ContentBlock{{Type: "text", Text: "world"}},
-		GitBranch:    "main",
+		SessionID: "tx-1",
+		MessageID: "m2",
+		ParentID:  "m1",
+		Time:      now.Add(2 * time.Second),
+		Role:      "assistant",
+		Content:   []ContentBlock{{Type: "text", Text: "world"}},
+		GitBranch: "main",
 	}); err != nil {
 		t.Fatalf("AppendMessage(assistant): %v", err)
 	}
 	if err := store.PatchState(context.Background(), PatchStateCommand{
-		TranscriptID: "tx-1",
-		Time:         now.Add(3 * time.Second),
-		Ops:          []PatchOp{PatchTitle("Fix bug"), PatchLastPrompt("hello")},
+		SessionID: "tx-1",
+		Time:      now.Add(3 * time.Second),
+		Ops:       []PatchOp{PatchTitle("Fix bug"), PatchLastPrompt("hello")},
 	}); err != nil {
 		t.Fatalf("PatchState(): %v", err)
 	}
@@ -87,36 +87,36 @@ func TestFileStoreCompactAndFork(t *testing.T) {
 
 	now := time.Date(2026, 4, 6, 16, 10, 0, 0, time.UTC)
 	if err := store.Start(context.Background(), StartCommand{
-		TranscriptID: "tx-1",
-		ProjectID:    "proj-1",
-		Cwd:          "/tmp/project",
-		Time:         now,
+		SessionID: "tx-1",
+		ProjectID: "proj-1",
+		Cwd:       "/tmp/project",
+		Time:      now,
 	}); err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
 	if err := store.AppendMessage(context.Background(), AppendMessageCommand{
-		TranscriptID: "tx-1",
-		MessageID:    "m1",
-		Time:         now.Add(time.Second),
-		Role:         "user",
-		Content:      []ContentBlock{{Type: "text", Text: "hello"}},
+		SessionID: "tx-1",
+		MessageID: "m1",
+		Time:      now.Add(time.Second),
+		Role:      "user",
+		Content:   []ContentBlock{{Type: "text", Text: "hello"}},
 	}); err != nil {
 		t.Fatalf("AppendMessage(): %v", err)
 	}
 	if err := store.AppendMessage(context.Background(), AppendMessageCommand{
-		TranscriptID: "tx-1",
-		MessageID:    "m2",
-		ParentID:     "m1",
-		Time:         now.Add(2 * time.Second),
-		Role:         "assistant",
-		Content:      []ContentBlock{{Type: "text", Text: "world"}},
+		SessionID: "tx-1",
+		MessageID: "m2",
+		ParentID:  "m1",
+		Time:      now.Add(2 * time.Second),
+		Role:      "assistant",
+		Content:   []ContentBlock{{Type: "text", Text: "world"}},
 	}); err != nil {
 		t.Fatalf("AppendMessage(m2): %v", err)
 	}
 	if err := store.Compact(context.Background(), CompactCommand{
-		TranscriptID: "tx-1",
-		Time:         now.Add(3 * time.Second),
-		BoundaryID:   "m1",
+		SessionID:  "tx-1",
+		Time:       now.Add(3 * time.Second),
+		BoundaryID: "m1",
 	}); err != nil {
 		t.Fatalf("Compact(): %v", err)
 	}
@@ -130,9 +130,9 @@ func TestFileStoreCompactAndFork(t *testing.T) {
 	}
 
 	if err := store.Fork(context.Background(), ForkCommand{
-		SourceTranscriptID: "tx-1",
-		NewTranscriptID:    "tx-2",
-		Time:               now.Add(4 * time.Second),
+		SourceSessionID: "tx-1",
+		NewSessionID:    "tx-2",
+		Time:            now.Add(4 * time.Second),
 	}); err != nil {
 		t.Fatalf("Fork(): %v", err)
 	}
@@ -156,17 +156,17 @@ func TestFileStoreAppendMessageIsIdempotent(t *testing.T) {
 
 	now := time.Date(2026, 4, 6, 16, 20, 0, 0, time.UTC)
 	if err := store.Start(context.Background(), StartCommand{
-		TranscriptID: "tx-1", Cwd: "/tmp/project", Provider: "openai", Model: "gpt-test", Time: now,
+		SessionID: "tx-1", Cwd: "/tmp/project", Provider: "openai", Model: "gpt-test", Time: now,
 	}); err != nil {
 		t.Fatalf("Start(): %v", err)
 	}
 
 	msg := AppendMessageCommand{
-		TranscriptID: "tx-1",
-		MessageID:    "m1",
-		Time:         now.Add(time.Second),
-		Role:         "user",
-		Content:      []ContentBlock{{Type: "text", Text: "hello"}},
+		SessionID: "tx-1",
+		MessageID: "m1",
+		Time:      now.Add(time.Second),
+		Role:      "user",
+		Content:   []ContentBlock{{Type: "text", Text: "hello"}},
 	}
 	for i := range 3 {
 		if err := store.AppendMessage(context.Background(), msg); err != nil {

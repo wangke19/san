@@ -82,7 +82,7 @@ func Test_extractUserContent_restoresDisplayContent(t *testing.T) {
 			Role: "user",
 			Content: []ContentBlock{
 				{Type: "text", Text: "前面 "},
-				{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}},
+				{Type: "image", ImageSource: &ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}},
 				{Type: "text", Text: " 后面"},
 			},
 		},

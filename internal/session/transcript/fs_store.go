@@ -33,7 +33,7 @@ type fileIndex struct {
 }
 
 type fileIndexEntry struct {
-	TranscriptID string    `json:"transcriptId"`
+	SessionID    string    `json:"sessionId"`
 	FullPath     string    `json:"fullPath"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
@@ -59,7 +59,7 @@ func (s *FileStore) Start(ctx context.Context, cmd StartCommand) error {
 		return err
 	}
 
-	path := s.transcriptPath(cmd.TranscriptID)
+	path := s.transcriptPath(cmd.SessionID)
 	exists, err := fileExists(path)
 	if err != nil {
 		return err
@@ -69,12 +69,12 @@ func (s *FileStore) Start(ctx context.Context, cmd StartCommand) error {
 	}
 
 	rec := Record{
-		ID:           cmd.TranscriptID + ":start",
-		TranscriptID: cmd.TranscriptID,
-		Time:         cmd.Time,
-		Type:         RecordStarted,
-		Cwd:          cmd.Cwd,
-		System: &SystemRecord{
+		ID:        cmd.SessionID + ":start",
+		SessionID: cmd.SessionID,
+		Time:      cmd.Time,
+		Type:      SessionStarted,
+		Cwd:       cmd.Cwd,
+		Session: &SessionRecord{
 			Provider: cmd.Provider,
 			Model:    cmd.Model,
 			ParentID: cmd.ParentID,
@@ -83,7 +83,7 @@ func (s *FileStore) Start(ctx context.Context, cmd StartCommand) error {
 	if err := s.appendRecord(path, rec, true); err != nil {
 		return err
 	}
-	return s.refreshIndexLocked(cmd.TranscriptID)
+	return s.refreshIndexLocked(cmd.SessionID)
 }
 
 func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand) error {
@@ -94,8 +94,8 @@ func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand)
 		return err
 	}
 
-	path := s.transcriptPath(cmd.TranscriptID)
-	seen, err := s.persistedIDsLocked(cmd.TranscriptID)
+	path := s.transcriptPath(cmd.SessionID)
+	seen, err := s.persistedIDsLocked(cmd.SessionID)
 	if err != nil {
 		return err
 	}
@@ -104,15 +104,15 @@ func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand)
 	}
 
 	rec := Record{
-		ID:           cmd.TranscriptID + ":" + cmd.MessageID,
-		TranscriptID: cmd.TranscriptID,
-		Time:         cmd.Time,
-		Type:         RecordMessageAppended,
-		ParentID:     cmd.ParentID,
-		Cwd:          cmd.Cwd,
-		GitBranch:    cmd.GitBranch,
-		AgentID:      cmd.AgentID,
-		IsSidechain:  cmd.IsSidechain,
+		ID:          cmd.SessionID + ":" + cmd.MessageID,
+		SessionID:   cmd.SessionID,
+		Time:        cmd.Time,
+		Type:        MessageAppended,
+		ParentID:    cmd.ParentID,
+		Cwd:         cmd.Cwd,
+		GitBranch:   cmd.GitBranch,
+		AgentID:     cmd.AgentID,
+		IsSidechain: cmd.IsSidechain,
 		Message: &MessageRecord{
 			MessageID: cmd.MessageID,
 			Role:      cmd.Role,
@@ -123,7 +123,7 @@ func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand)
 		return err
 	}
 	seen[cmd.MessageID] = struct{}{}
-	return s.refreshIndexLocked(cmd.TranscriptID)
+	return s.refreshIndexLocked(cmd.SessionID)
 }
 
 func (s *FileStore) PatchState(ctx context.Context, cmd PatchStateCommand) error {
@@ -135,18 +135,18 @@ func (s *FileStore) PatchState(ctx context.Context, cmd PatchStateCommand) error
 	}
 
 	rec := Record{
-		ID:           fmt.Sprintf("%s:state:%d", cmd.TranscriptID, cmd.Time.UnixNano()),
-		TranscriptID: cmd.TranscriptID,
-		Time:         cmd.Time,
-		Type:         RecordStatePatched,
+		ID:        fmt.Sprintf("%s:state:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		SessionID: cmd.SessionID,
+		Time:      cmd.Time,
+		Type:      StatePatched,
 		State: &StateRecord{
 			Ops: append([]PatchOp(nil), cmd.Ops...),
 		},
 	}
-	if err := s.appendRecord(s.transcriptPath(cmd.TranscriptID), rec, false); err != nil {
+	if err := s.appendRecord(s.transcriptPath(cmd.SessionID), rec, false); err != nil {
 		return err
 	}
-	return s.refreshIndexLocked(cmd.TranscriptID)
+	return s.refreshIndexLocked(cmd.SessionID)
 }
 
 func (s *FileStore) Compact(ctx context.Context, cmd CompactCommand) error {
@@ -158,16 +158,16 @@ func (s *FileStore) Compact(ctx context.Context, cmd CompactCommand) error {
 	}
 
 	rec := Record{
-		ID:           fmt.Sprintf("%s:compact:%d", cmd.TranscriptID, cmd.Time.UnixNano()),
-		TranscriptID: cmd.TranscriptID,
-		Time:         cmd.Time,
-		Type:         RecordCompacted,
-		System:       &SystemRecord{BoundaryID: cmd.BoundaryID},
+		ID:        fmt.Sprintf("%s:compact:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		SessionID: cmd.SessionID,
+		Time:      cmd.Time,
+		Type:      SessionCompacted,
+		Session:   &SessionRecord{BoundaryID: cmd.BoundaryID},
 	}
-	if err := s.appendRecord(s.transcriptPath(cmd.TranscriptID), rec, true); err != nil {
+	if err := s.appendRecord(s.transcriptPath(cmd.SessionID), rec, true); err != nil {
 		return err
 	}
-	return s.refreshIndexLocked(cmd.TranscriptID)
+	return s.refreshIndexLocked(cmd.SessionID)
 }
 
 func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
@@ -178,16 +178,16 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 		return err
 	}
 
-	sourcePath := s.transcriptPath(cmd.SourceTranscriptID)
+	sourcePath := s.transcriptPath(cmd.SourceSessionID)
 	records, err := s.loadRecordsLocked(sourcePath)
 	if err != nil {
 		return err
 	}
 	if len(records) == 0 {
-		return fmt.Errorf("source transcript not found: %s", cmd.SourceTranscriptID)
+		return fmt.Errorf("source transcript not found: %s", cmd.SourceSessionID)
 	}
 
-	destPath := s.transcriptPath(cmd.NewTranscriptID)
+	destPath := s.transcriptPath(cmd.NewSessionID)
 	tmpPath := destPath + ".tmp"
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -196,7 +196,7 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 	enc := json.NewEncoder(f)
 	enc.SetEscapeHTML(false)
 	for _, rec := range records {
-		rec.TranscriptID = cmd.NewTranscriptID
+		rec.SessionID = cmd.NewSessionID
 		rec.Time = cmd.Time
 		if err := enc.Encode(rec); err != nil {
 			_ = f.Close()
@@ -205,12 +205,12 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 		}
 	}
 	forkRec := Record{
-		ID:           fmt.Sprintf("%s:fork:%d", cmd.NewTranscriptID, cmd.Time.UnixNano()),
-		TranscriptID: cmd.NewTranscriptID,
-		Time:         cmd.Time,
-		Type:         RecordForked,
-		System: &SystemRecord{
-			ParentID: cmd.SourceTranscriptID,
+		ID:        fmt.Sprintf("%s:fork:%d", cmd.NewSessionID, cmd.Time.UnixNano()),
+		SessionID: cmd.NewSessionID,
+		Time:      cmd.Time,
+		Type:      SessionForked,
+		Session: &SessionRecord{
+			ParentID: cmd.SourceSessionID,
 		},
 	}
 	if err := enc.Encode(forkRec); err != nil {
@@ -226,7 +226,7 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename fork transcript: %w", err)
 	}
-	return s.refreshIndexLocked(cmd.NewTranscriptID)
+	return s.refreshIndexLocked(cmd.NewSessionID)
 }
 
 func (s *FileStore) Load(ctx context.Context, transcriptID string) (*Transcript, error) {
@@ -264,7 +264,7 @@ func (s *FileStore) List(ctx context.Context, projectID string, opts ListOptions
 			continue
 		}
 		items = append(items, ListItem{
-			TranscriptID: entry.TranscriptID,
+			SessionID:    entry.SessionID,
 			FullPath:     entry.FullPath,
 			CreatedAt:    entry.CreatedAt,
 			UpdatedAt:    entry.UpdatedAt,
@@ -332,7 +332,7 @@ func (s *FileStore) Delete(ctx context.Context, transcriptID string) error {
 	if err == nil {
 		filtered := make([]fileIndexEntry, 0, len(index.Entries))
 		for _, entry := range index.Entries {
-			if entry.TranscriptID != transcriptID {
+			if entry.SessionID != transcriptID {
 				filtered = append(filtered, entry)
 			}
 		}
@@ -427,7 +427,7 @@ func scanMessageIDs(path string) (map[string]struct{}, error) {
 		if json.Unmarshal(scanner.Bytes(), &rec) != nil {
 			continue
 		}
-		if rec.Type == RecordMessageAppended && rec.Message != nil {
+		if rec.Type == MessageAppended && rec.Message != nil {
 			seen[rec.Message.MessageID] = struct{}{}
 		}
 	}
@@ -517,7 +517,7 @@ func (s *FileStore) rebuildIndexLocked() error {
 			continue
 		}
 		index.Entries = append(index.Entries, fileIndexEntry{
-			TranscriptID: item.TranscriptID,
+			SessionID:    item.SessionID,
 			FullPath:     item.FullPath,
 			CreatedAt:    item.CreatedAt,
 			UpdatedAt:    item.UpdatedAt,
@@ -546,7 +546,7 @@ func (s *FileStore) refreshIndexLocked(transcriptID string) error {
 	}
 
 	entry := fileIndexEntry{
-		TranscriptID: item.TranscriptID,
+		SessionID:    item.SessionID,
 		FullPath:     item.FullPath,
 		CreatedAt:    item.CreatedAt,
 		UpdatedAt:    item.UpdatedAt,
@@ -558,7 +558,7 @@ func (s *FileStore) refreshIndexLocked(transcriptID string) error {
 	}
 
 	for i := range index.Entries {
-		if index.Entries[i].TranscriptID == transcriptID {
+		if index.Entries[i].SessionID == transcriptID {
 			index.Entries[i] = entry
 			return s.saveIndexLocked(index)
 		}
@@ -583,7 +583,7 @@ func (s *FileStore) buildListItemLocked(transcriptID string) (ListItem, error) {
 	}
 
 	return ListItem{
-		TranscriptID: transcriptID,
+		SessionID:    transcriptID,
 		FullPath:     s.transcriptPath(transcriptID),
 		CreatedAt:    transcript.CreatedAt,
 		UpdatedAt:    transcript.UpdatedAt,

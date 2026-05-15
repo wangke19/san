@@ -160,37 +160,37 @@ func (s *Store) Save(sess *Snapshot) error {
 	id := sess.Metadata.ID
 
 	if err := s.transcriptStore.Start(ctx, transcript.StartCommand{
-		TranscriptID: id,
-		ProjectID:    s.projectID,
-		Cwd:          sess.Metadata.Cwd,
-		Provider:     sess.Metadata.Provider,
-		Model:        sess.Metadata.Model,
-		ParentID:     sess.Metadata.ParentSessionID,
-		Time:         sess.Metadata.CreatedAt,
+		SessionID: id,
+		ProjectID: s.projectID,
+		Cwd:       sess.Metadata.Cwd,
+		Provider:  sess.Metadata.Provider,
+		Model:     sess.Metadata.Model,
+		ParentID:  sess.Metadata.ParentSessionID,
+		Time:      sess.Metadata.CreatedAt,
 	}); err != nil {
 		return err
 	}
 
 	for _, n := range nodes {
 		if err := s.transcriptStore.AppendMessage(ctx, transcript.AppendMessageCommand{
-			TranscriptID: id,
-			MessageID:    n.ID,
-			ParentID:     n.ParentID,
-			Time:         n.Time,
-			Cwd:          n.Cwd,
-			GitBranch:    n.GitBranch,
-			AgentID:      n.AgentID,
-			IsSidechain:  n.IsSidechain,
-			Role:         n.Role,
-			Content:      n.Content,
+			SessionID:   id,
+			MessageID:   n.ID,
+			ParentID:    n.ParentID,
+			Time:        n.Time,
+			Cwd:         n.Cwd,
+			GitBranch:   n.GitBranch,
+			AgentID:     n.AgentID,
+			IsSidechain: n.IsSidechain,
+			Role:        n.Role,
+			Content:     n.Content,
 		}); err != nil {
 			return err
 		}
 	}
 
 	return s.transcriptStore.PatchState(ctx, transcript.PatchStateCommand{
-		TranscriptID: id,
-		Time:         now,
+		SessionID: id,
+		Time:      now,
 		Ops: transcript.StateOpsFor(transcript.State{
 			Title:      sess.Metadata.Title,
 			LastPrompt: sess.Metadata.LastPrompt,
@@ -207,9 +207,9 @@ func (s *Store) Fork(sourceID string) (*Snapshot, error) {
 
 	newID := generateSessionID()
 	if err := s.transcriptStore.Fork(context.Background(), transcript.ForkCommand{
-		SourceTranscriptID: sourceID,
-		NewTranscriptID:    newID,
-		Time:               time.Now(),
+		SourceSessionID: sourceID,
+		NewSessionID:    newID,
+		Time:            time.Now(),
 	}); err != nil {
 		return nil, err
 	}

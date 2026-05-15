@@ -5,12 +5,14 @@ import (
 	"time"
 )
 
+// Record type values follow <entity>.<verb> (past tense), lowercase,
+// dot-separated. See docs/tracing.md for the full taxonomy.
 const (
-	RecordStarted         = "transcript.started"
-	RecordMessageAppended = "message.appended"
-	RecordStatePatched    = "state.patched"
-	RecordCompacted       = "transcript.compacted"
-	RecordForked          = "transcript.forked"
+	SessionStarted   = "session.started"
+	SessionForked    = "session.forked"
+	SessionCompacted = "session.compacted"
+	MessageAppended  = "message.appended"
+	StatePatched     = "state.patched"
 )
 
 const (
@@ -23,10 +25,10 @@ const (
 )
 
 type Record struct {
-	ID           string    `json:"id"`
-	TranscriptID string    `json:"transcriptId"`
-	Time         time.Time `json:"time"`
-	Type         string    `json:"type"`
+	ID        string    `json:"id"`
+	SessionID string    `json:"sessionId"`
+	Time      time.Time `json:"time"`
+	Type      string    `json:"type"`
 
 	ParentID    string `json:"parentId,omitempty"`
 	IsSidechain bool   `json:"isSidechain,omitempty"`
@@ -37,7 +39,7 @@ type Record struct {
 
 	Message *MessageRecord `json:"message,omitempty"`
 	State   *StateRecord   `json:"state,omitempty"`
-	System  *SystemRecord  `json:"system,omitempty"`
+	Session *SessionRecord `json:"session,omitempty"`
 }
 
 type MessageRecord struct {
@@ -55,7 +57,11 @@ type PatchOp struct {
 	Value json.RawMessage `json:"value"`
 }
 
-type SystemRecord struct {
+// SessionRecord carries the lifecycle payload for session.started /
+// session.forked / session.compacted records. The three event types
+// multiplex on a single struct because the fields are sparse and the
+// projector dispatches on Record.Type rather than payload shape.
+type SessionRecord struct {
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	ParentID   string `json:"parentId,omitempty"`
@@ -78,7 +84,13 @@ type ContentBlock struct {
 	Content   []ContentBlock `json:"content,omitempty"`
 	IsError   bool           `json:"is_error,omitempty"`
 
-	Source *ImageSource `json:"source,omitempty"`
+	// Source marks the provenance of injected content (e.g. "hook:UserPromptSubmit",
+	// "command:/identity", "reminder:system-reminder"). Empty for user-authored
+	// blocks and for ContentBlocks that the model itself produced.
+	Source string `json:"source,omitempty"`
+
+	// ImageSource is the inlined image data on type=image blocks.
+	ImageSource *ImageSource `json:"imageSource,omitempty"`
 }
 
 type ImageSource struct {

@@ -102,8 +102,8 @@ func userContentToBlocks(content, displayContent string, images []core.Image) []
 	var blocks []ContentBlock
 	for _, img := range images {
 		blocks = append(blocks, ContentBlock{
-			Type:   "image",
-			Source: &ImageSource{Type: "base64", MediaType: img.MediaType, Data: img.Data},
+			Type:        "image",
+			ImageSource: &ImageSource{Type: "base64", MediaType: img.MediaType, Data: img.Data},
 		})
 	}
 	if content != "" {
@@ -133,8 +133,8 @@ func interleavedUserContentToBlocks(content, displayContent string, images []cor
 			if idx, ok := idToIdx[id]; ok && idx < len(images) {
 				img := images[idx]
 				blocks = append(blocks, ContentBlock{
-					Type:   "image",
-					Source: &ImageSource{Type: "base64", MediaType: img.MediaType, Data: img.Data},
+					Type:        "image",
+					ImageSource: &ImageSource{Type: "base64", MediaType: img.MediaType, Data: img.Data},
 				})
 			}
 		}
@@ -199,8 +199,8 @@ func extractUserContent(blocks []ContentBlock, msg *core.Message) {
 			content.WriteString(block.Text)
 			display.WriteString(block.Text)
 		case "image":
-			if block.Source != nil {
-				msg.Images = append(msg.Images, core.Image{MediaType: block.Source.MediaType, Data: block.Source.Data})
+			if block.ImageSource != nil {
+				msg.Images = append(msg.Images, core.Image{MediaType: block.ImageSource.MediaType, Data: block.ImageSource.Data})
 				imageCount++
 				display.WriteString(fmt.Sprintf("[Image #%d]", imageCount))
 			}
