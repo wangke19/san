@@ -586,10 +586,55 @@ func TestSession_SaveTwice_NoDuplication(t *testing.T) {
 	}
 }
 
+// Regression: after a process restart the lastEmittedState cache is empty.
+// If a user clears a previously-set field (Tag "urgent" → "") on the first
+// save after restart, StateOpsDiff(zero, {Tag:""}) would see "" == "" and
+// emit no op — leaving the stale value on disk forever. The store must
+// rehydrate prev from disk on cold cache so the clear actually lands.
+func TestSession_FirstSaveAfterRestart_PicksUpDiskState(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	store1, err := session.NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatalf("NewStoreWithDir: %v", err)
+	}
+	first := &session.Snapshot{
+		Metadata: session.SessionMetadata{ID: "restart-tag", Tag: "urgent"},
+		Entries:  []session.Entry{makeUserEntry("m1", "hi")},
+	}
+	if err := store1.Save(first); err != nil {
+		t.Fatalf("Save first: %v", err)
+	}
+
+	// Fresh store simulates a process restart — lastEmittedState is empty.
+	store2, err := session.NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatalf("NewStoreWithDir #2: %v", err)
+	}
+	cleared := &session.Snapshot{
+		Metadata: session.SessionMetadata{ID: "restart-tag", Tag: ""},
+		Entries:  []session.Entry{makeUserEntry("m1", "hi")},
+	}
+	if err := store2.Save(cleared); err != nil {
+		t.Fatalf("Save cleared: %v", err)
+	}
+
+	loaded, err := store2.Load("restart-tag")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Metadata.Tag != "" {
+		t.Fatalf("Tag = %q, want empty (clear did not survive cold cache)", loaded.Metadata.Tag)
+	}
+}
+
 // Regression: clearing tasks (or worktree) on a subsequent Save must clear
-// them on reload. Under append-only last-wins projection, the StateOpsFor
-// helper must always emit Patch ops so absence-of-op doesn't resurrect
-// stale state from earlier patches.
+// them on reload. Under append-only last-wins projection, StateOpsDiff
+// must emit an empty-array tasks op when the previous snapshot had tasks
+// and the new one doesn't, so absence-of-op doesn't resurrect stale state.
 func TestSession_SaveClearedTasks_ClearsOnReload(t *testing.T) {
 	store := newTestStore(t)
 

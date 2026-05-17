@@ -117,6 +117,7 @@ func (p *ApprovalModel) HandleKeypress(msg tea.KeyMsg) (tea.Cmd, *ApprovalRespon
 	if !p.active {
 		return nil, nil
 	}
+	options := buildApprovalOptionRows(p.request)
 
 	switch msg.Type {
 	case tea.KeyUp, tea.KeyCtrlP:
@@ -126,16 +127,24 @@ func (p *ApprovalModel) HandleKeypress(msg tea.KeyMsg) (tea.Cmd, *ApprovalRespon
 		return nil, nil
 
 	case tea.KeyDown, tea.KeyCtrlN:
-		if p.selectedIdx < 3 {
+		if p.selectedIdx < len(options)-1 {
 			p.selectedIdx++
 		}
 		return nil, nil
 
 	case tea.KeyEnter:
-		return p.confirmSelection()
+		return p.respondAt(options, p.selectedIdx)
 
 	case tea.KeyShiftTab:
-		return p.respondFull(true, true, false)
+		// shift+tab is the accelerator for "Yes, allow all this session".
+		// Look it up by AllowAll instead of hardcoding the index so the
+		// accelerator survives reordering.
+		for i, opt := range options {
+			if opt.AllowAll {
+				return p.respondAt(options, i)
+			}
+		}
+		return nil, nil
 
 	case tea.KeyCtrlO:
 		if p.diffPreview != nil {
@@ -147,41 +156,53 @@ func (p *ApprovalModel) HandleKeypress(msg tea.KeyMsg) (tea.Cmd, *ApprovalRespon
 		return nil, nil
 
 	case tea.KeyEsc, tea.KeyCtrlC:
-		return p.respondFull(false, false, false)
+		// Esc/Ctrl+C maps to whichever option carries no approval — the
+		// modal must always offer one such row (a "No" or equivalent).
+		for i, opt := range options {
+			if !opt.Approved {
+				return p.respondAt(options, i)
+			}
+		}
+		return nil, nil
 	}
 
-	switch msg.String() {
-	case "1", "y", "Y":
-		return p.respondFull(true, false, false)
-	case "2":
-		return p.respondFull(true, true, false)
-	case "3":
-		return p.respondFull(true, false, true)
-	case "4", "n", "N":
-		return p.respondFull(false, false, false)
+	// Digit keys: "1".."9" map to options by 1-based index. "y"/"n" remain
+	// shortcuts for the first approved / first non-approved row.
+	if s := msg.String(); len(s) == 1 {
+		if s[0] >= '1' && s[0] <= '9' {
+			if idx := int(s[0] - '1'); idx < len(options) {
+				return p.respondAt(options, idx)
+			}
+		}
+		switch s {
+		case "y", "Y":
+			for i, opt := range options {
+				if opt.Approved && !opt.AllowAll && !opt.Persist {
+					return p.respondAt(options, i)
+				}
+			}
+		case "n", "N":
+			for i, opt := range options {
+				if !opt.Approved {
+					return p.respondAt(options, i)
+				}
+			}
+		}
 	}
 
 	return nil, nil
 }
 
-func (p *ApprovalModel) respondFull(approved, allowAll, persist bool) (tea.Cmd, *ApprovalResponseMsg) {
+func (p *ApprovalModel) respondAt(options []approvalOption, i int) (tea.Cmd, *ApprovalResponseMsg) {
+	if i < 0 || i >= len(options) {
+		return nil, nil
+	}
+	opt := options[i]
 	req := p.request
 	p.Hide()
-	return nil, &ApprovalResponseMsg{Approved: approved, AllowAll: allowAll, Persist: persist, Request: req}
-}
-
-func (p *ApprovalModel) confirmSelection() (tea.Cmd, *ApprovalResponseMsg) {
-	switch p.selectedIdx {
-	case 0:
-		return p.respondFull(true, false, false)
-	case 1:
-		return p.respondFull(true, true, false)
-	case 2:
-		return p.respondFull(true, false, true)
-	case 3:
-		return p.respondFull(false, false, false)
+	return nil, &ApprovalResponseMsg{
+		Approved: opt.Approved, AllowAll: opt.AllowAll, Persist: opt.Persist, Request: req,
 	}
-	return nil, nil
 }
 
 // --- Approval style helpers ---
@@ -286,8 +307,48 @@ func (p *ApprovalModel) getTitle() string {
 	return title
 }
 
-func (p *ApprovalModel) getAllSessionLabel() string {
-	switch p.request.ToolName {
+// approvalOption is one row of the approval modal: its label, an optional
+// keyboard hint, and the response flags that fire when the user picks it.
+// Behavior + presentation collapsed into one struct so adding a new option
+// is a single append to buildApprovalOptionRows — renderer, keyboard
+// dispatch, and trace emit all stay in sync automatically.
+type approvalOption struct {
+	Label    string
+	Hint     string
+	Approved bool
+	AllowAll bool
+	Persist  bool
+}
+
+// buildApprovalOptionRows is the single source of truth for the modal's
+// option set. Adding "this directory only", removing "Always allow",
+// reordering — happens here and propagates to renderMenu, HandleKeypress,
+// and BuildApprovalOptions automatically.
+func buildApprovalOptionRows(req *perm.PermissionRequest) []approvalOption {
+	return []approvalOption{
+		{Label: "Yes", Approved: true},
+		{Label: allSessionLabel(req), Hint: "(shift+tab)", Approved: true, AllowAll: true},
+		{Label: alwaysAllowLabel(req), Approved: true, Persist: true},
+		{Label: "No"},
+	}
+}
+
+// BuildApprovalOptions returns just the labels in display order. Used by the
+// trace recorder; the modal renderer uses buildApprovalOptionRows directly.
+func BuildApprovalOptions(req *perm.PermissionRequest) []string {
+	rows := buildApprovalOptionRows(req)
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Label
+	}
+	return out
+}
+
+func allSessionLabel(req *perm.PermissionRequest) string {
+	if req == nil {
+		return "Yes, allow all during this session"
+	}
+	switch req.ToolName {
 	case "Edit":
 		return "Yes, allow all edits during this session"
 	case "Write":
@@ -303,9 +364,9 @@ func (p *ApprovalModel) getAllSessionLabel() string {
 	}
 }
 
-func (p *ApprovalModel) getAlwaysAllowLabel() string {
-	if p.request != nil && len(p.request.SuggestedRules) > 0 {
-		return "Always allow: " + p.request.SuggestedRules[0]
+func alwaysAllowLabel(req *perm.PermissionRequest) string {
+	if req != nil && len(req.SuggestedRules) > 0 {
+		return "Always allow: " + req.SuggestedRules[0]
 	}
 	return "Always allow"
 }
@@ -313,25 +374,16 @@ func (p *ApprovalModel) getAlwaysAllowLabel() string {
 func (p *ApprovalModel) renderMenu() string {
 	var sb strings.Builder
 
-	options := []struct {
-		label string
-		hint  string
-	}{
-		{"Yes", ""},
-		{p.getAllSessionLabel(), "(shift+tab)"},
-		{p.getAlwaysAllowLabel(), ""},
-		{"No", ""},
-	}
-
+	options := buildApprovalOptionRows(p.request)
 	for i, opt := range options {
 		if i == p.selectedIdx {
-			sb.WriteString(approvalSelectedStyle().Render(fmt.Sprintf(" ❯ %d. %s", i+1, opt.label)))
+			sb.WriteString(approvalSelectedStyle().Render(fmt.Sprintf(" ❯ %d. %s", i+1, opt.Label)))
 		} else {
-			sb.WriteString(approvalUnselectedStyle().Render(fmt.Sprintf("   %d. %s", i+1, opt.label)))
+			sb.WriteString(approvalUnselectedStyle().Render(fmt.Sprintf("   %d. %s", i+1, opt.Label)))
 		}
-		if opt.hint != "" {
+		if opt.Hint != "" {
 			sb.WriteString(" ")
-			sb.WriteString(approvalHintStyle().Render(opt.hint))
+			sb.WriteString(approvalHintStyle().Render(opt.Hint))
 		}
 		sb.WriteString("\n")
 	}

@@ -78,7 +78,7 @@ func TestBuildPromptOrder_StableBeforeVolatile(t *testing.T) {
 	indices := map[string]int{
 		"identity":   strings.Index(prompt, "interactive AI assistant"),
 		"policy":     strings.Index(prompt, "<policy>"),
-		"guidelines": strings.Index(prompt, `<guidelines name="tools">`),
+		"guidelines": strings.Index(prompt, `<guidelines name="tool-usage">`),
 		"env":        strings.Index(prompt, "<environment>"),
 	}
 	for name, idx := range indices {
@@ -172,10 +172,10 @@ func TestBuildGitGuidelinesToggle(t *testing.T) {
 		WithEnvironment(Environment{Cwd: "/tmp/test", IsGit: false}),
 	)
 
-	if !strings.Contains(withGit.Prompt(), `<guidelines name="git">`) {
+	if !strings.Contains(withGit.Prompt(), `<guidelines name="git-safety">`) {
 		t.Error("git=true should include git guidelines")
 	}
-	if strings.Contains(withoutGit.Prompt(), `<guidelines name="git">`) {
+	if strings.Contains(withoutGit.Prompt(), `<guidelines name="git-safety">`) {
 		t.Error("git=false should omit git guidelines")
 	}
 }

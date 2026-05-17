@@ -152,8 +152,8 @@ func TestRecorderWritesSystemSectionEvents(t *testing.T) {
 	}
 }
 
-// Tool registry changes must produce one tools.added per Add and one
-// tools.removed per Remove. Schema/Name and Caller are preserved.
+// Tool registry changes must produce one tool.added per Add and one
+// tool.removed per Remove. Schema/Name and Caller are preserved.
 func TestRecorderWritesToolsChangeEvents(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := transcript.NewFileStore(dir, "proj-1")
@@ -187,23 +187,23 @@ func TestRecorderWritesToolsChangeEvents(t *testing.T) {
 	var added, removed []transcript.Record
 	for _, r := range records {
 		switch r.Type {
-		case transcript.ToolsAdded:
+		case transcript.ToolAdded:
 			added = append(added, r)
-		case transcript.ToolsRemoved:
+		case transcript.ToolRemoved:
 			removed = append(removed, r)
 		}
 	}
 	if len(added) != 2 {
-		t.Fatalf("tools.added count = %d, want 2", len(added))
+		t.Fatalf("tool.added count = %d, want 2", len(added))
 	}
 	if len(removed) != 1 {
-		t.Fatalf("tools.removed count = %d, want 1", len(removed))
+		t.Fatalf("tool.removed count = %d, want 1", len(removed))
 	}
-	if added[0].Tools.Schema == nil || added[0].Tools.Schema.Name != "Read" || added[0].Tools.Caller != "tools:init" {
-		t.Fatalf("first added record = %+v", added[0].Tools)
+	if added[0].Tool.Schema == nil || added[0].Tool.Schema.Name != "Read" || added[0].Tool.Caller != "tools:init" {
+		t.Fatalf("first added record = %+v", added[0].Tool)
 	}
-	if removed[0].Tools.Name != "Bash" || removed[0].Tools.Caller != "mode:plan" {
-		t.Fatalf("removed record = %+v", removed[0].Tools)
+	if removed[0].Tool.Name != "Bash" || removed[0].Tool.Caller != "mode:plan" {
+		t.Fatalf("removed record = %+v", removed[0].Tool)
 	}
 }
 

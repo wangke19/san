@@ -14,28 +14,19 @@ import (
 	"github.com/genai-io/gen-code/internal/session/transcript"
 )
 
-// Recorder turns core.Agent lifecycle events into transcript records.
-//
-// One Recorder is bound to one (sessionID, agentID) pair. The OnAgentEvent
-// method is meant to be passed as core.Config.OnEvent — it's called
-// synchronously from the agent goroutine, so handlers stay fast.
-//
-// The recorder is additive: existing code paths (Store.Save) keep persisting
-// messages and state. The recorder writes only event-driven records
-// (inference.requested / inference.responded) that the snapshot path can't
-// observe.
+// Recorder turns core.Agent lifecycle events into transcript records in
+// causal order — every message.appended lands before the inference.requested
+// that consumes it. One Recorder is bound to one (sessionID, agentID) pair;
+// OnAgentEvent is the core.Config.OnEvent callback.
 type Recorder struct {
 	fs        *transcript.FileStore
 	sessionID string
-	agentID   string
-	provider  string
-	model     string
-	maxTokens int
 
 	turn atomic.Int64
 
-	mu          sync.Mutex
-	lastRequest *requestState
+	mu            sync.Mutex
+	lastRequest   *requestState
+	lastMessageID string // for parentId on message.appended
 }
 
 type requestState struct {
@@ -44,13 +35,9 @@ type requestState struct {
 	messageIDs []string
 }
 
-// RecorderOptions configures a Recorder. provider/model/maxTokens are captured
-// at construction time and stamped on every inference record. Mid-session
-// model swaps will be handled by a future model.changed event, not by mutating
-// the recorder.
-//
-// Cwd and ProjectID are needed at construction so the recorder can write
-// session.started before any telemetry — see NewRecorder for why.
+// RecorderOptions configures a Recorder. Provider/Model/MaxTokens/AgentID
+// land on session.started; mid-session changes need a model.changed event,
+// not per-record restamping.
 type RecorderOptions struct {
 	FileStore *transcript.FileStore
 	SessionID string
@@ -62,16 +49,10 @@ type RecorderOptions struct {
 	ProjectID string
 }
 
-// NewRecorder constructs a Recorder and ensures session.started lands on
-// disk BEFORE the recorder can be invoked. This matters because the caller
-// (core.NewAgent → System/Tools.SetObserver) immediately replays existing
-// sections/tools as synthetic events; those events create the transcript
-// file via AppendSystemSection / AppendTools. If session.started hasn't
-// been written first, the subsequent Store.Save → Start call short-circuits
-// on fileExists and provider/model/parent metadata is lost.
-//
-// Start is idempotent — a no-op on existing files — so callers (Store.Save)
-// that also invoke it stay correct.
+// NewRecorder writes session.started before returning so observer-driven
+// replay (system sections, tools) lands on a file that already carries
+// session metadata. Start is idempotent so Store.Save's own Start stays a
+// no-op.
 func NewRecorder(opts RecorderOptions) *Recorder {
 	if opts.FileStore != nil && opts.SessionID != "" {
 		_ = opts.FileStore.Start(context.Background(), transcript.StartCommand{
@@ -80,17 +61,76 @@ func NewRecorder(opts RecorderOptions) *Recorder {
 			Cwd:       opts.Cwd,
 			Provider:  opts.Provider,
 			Model:     opts.Model,
+			MaxTokens: opts.MaxTokens,
+			AgentID:   opts.AgentID,
 			Time:      time.Now(),
 		})
 	}
 	return &Recorder{
 		fs:        opts.FileStore,
 		sessionID: opts.SessionID,
-		agentID:   opts.AgentID,
-		provider:  opts.Provider,
-		model:     opts.Model,
-		maxTokens: opts.MaxTokens,
 	}
+}
+
+// seedLastMessageID primes the parent pointer for the next message.appended
+// from a known leaf. Use after Continue/Resume so the first new turn chains
+// off the loaded history instead of starting a fresh root and orphaning
+// everything before it.
+func (r *Recorder) seedLastMessageID(id string) {
+	if r == nil || id == "" {
+		return
+	}
+	r.mu.Lock()
+	r.lastMessageID = id
+	r.mu.Unlock()
+}
+
+// audit runs write under r's nil-guard, time-stamps it, and logs but does
+// not propagate failures — audit telemetry must never block the recorder's
+// caller (hook engine, permission decider, skill registry).
+func (r *Recorder) audit(name string, write func(time.Time) error) {
+	if r == nil || r.fs == nil || r.sessionID == "" {
+		return
+	}
+	if err := write(time.Now()); err != nil {
+		log.Logger().Warn("recorder: append "+name+" failed", zap.Error(err))
+	}
+}
+
+// RecordHook writes one hook.fired record.
+func (r *Recorder) RecordHook(rec transcript.HookRecord) {
+	r.audit("hook", func(t time.Time) error {
+		return r.fs.AppendHook(context.Background(), transcript.AppendHookCommand{
+			SessionID: r.sessionID, Time: t, Record: rec,
+		})
+	})
+}
+
+// RecordSkillState writes one skill.state.changed record.
+func (r *Recorder) RecordSkillState(rec transcript.SkillRecord) {
+	r.audit("skill state", func(t time.Time) error {
+		return r.fs.AppendSkillState(context.Background(), transcript.AppendSkillStateCommand{
+			SessionID: r.sessionID, Time: t, Record: rec,
+		})
+	})
+}
+
+// RecordPermissionRequired emits permission.required for an ask escalation.
+func (r *Recorder) RecordPermissionRequired(rec transcript.PermissionRecord) {
+	r.recordPermission(transcript.PermissionRequired, rec)
+}
+
+// RecordPermissionDecided emits permission.decided for a terminal allow/reject.
+func (r *Recorder) RecordPermissionDecided(rec transcript.PermissionRecord) {
+	r.recordPermission(transcript.PermissionDecided, rec)
+}
+
+func (r *Recorder) recordPermission(typ string, rec transcript.PermissionRecord) {
+	r.audit("permission", func(t time.Time) error {
+		return r.fs.AppendPermission(context.Background(), transcript.AppendPermissionCommand{
+			SessionID: r.sessionID, Time: t, Type: typ, Record: rec,
+		})
+	})
 }
 
 // OnAgentEvent is the core.Config.OnEvent callback. It dispatches by event
@@ -110,6 +150,64 @@ func (r *Recorder) OnAgentEvent(ev core.Event) {
 		r.onSystemChange(ev)
 	case core.OnToolsChange:
 		r.onToolsChange(ev)
+	case core.OnAppend:
+		r.onAppend(ev)
+	}
+}
+
+// onAppend persists message.appended at the moment the message enters the
+// chain. This is what guarantees "causes before consumers": any subsequent
+// inference.requested lands after the messages it references.
+func (r *Recorder) onAppend(ev core.Event) {
+	msg, ok := ev.Data.(core.Message)
+	if !ok || msg.ID == "" {
+		return
+	}
+
+	content, role := messageToTranscript(msg)
+	if len(content) == 0 {
+		return // control signals etc. aren't model-visible
+	}
+
+	r.mu.Lock()
+	parent := r.lastMessageID
+	r.lastMessageID = msg.ID
+	r.mu.Unlock()
+
+	err := r.fs.AppendMessage(context.Background(), transcript.AppendMessageCommand{
+		SessionID: r.sessionID,
+		MessageID: msg.ID,
+		ParentID:  parent,
+		Time:      time.Now(),
+		Role:      role,
+		Content:   content,
+	})
+	if err != nil {
+		log.Logger().Warn("recorder: append message failed", zap.Error(err))
+	}
+}
+
+// messageToTranscript routes core.Message → transcript content blocks
+// through the same converters Store.Save uses, so the dedupe key (message
+// ID) maps to byte-identical content from either writer.
+//
+// RoleTool maps to "user" because that's the wire shape sent to the LLM
+// (Anthropic models tool results as a user message containing tool_result
+// blocks). Without this case the agent's tool-result message gets an ID
+// stamped and joins a.messages → its ID lands in inference.requested's
+// messageIDs, but no message.appended is ever written, so replay can't
+// resolve the ID and the integrity check flags it as missing.
+func messageToTranscript(msg core.Message) ([]transcript.ContentBlock, string) {
+	switch msg.Role {
+	case core.RoleUser, core.RoleTool:
+		if msg.ToolResult != nil {
+			return toolResultToBlocks(msg.ToolResult), "user"
+		}
+		return userContentToBlocks(msg.Content, msg.DisplayContent, msg.Images), "user"
+	case core.RoleAssistant:
+		return assistantContentToBlocks(msg.Content, msg.Thinking, msg.ThinkingSignature, msg.ToolCalls), "assistant"
+	default:
+		return nil, ""
 	}
 }
 
@@ -118,17 +216,16 @@ func (r *Recorder) onToolsChange(ev core.Event) {
 	if !ok {
 		return
 	}
-	typ := transcript.ToolsAdded
-	payload := transcript.ToolsRecord{Caller: c.Caller}
+	typ := transcript.ToolAdded
+	payload := transcript.ToolRecord{Caller: c.Caller}
 	if c.Removed {
-		typ = transcript.ToolsRemoved
+		typ = transcript.ToolRemoved
 		payload.Name = c.Name
 	} else {
 		payload.Schema = toolSchemaView(c.Schema)
 	}
-	err := r.fs.AppendTools(context.Background(), transcript.AppendToolsCommand{
+	err := r.fs.AppendTool(context.Background(), transcript.AppendToolCommand{
 		SessionID: r.sessionID,
-		AgentID:   r.agentID,
 		Time:      time.Now(),
 		Type:      typ,
 		Record:    payload,
@@ -162,7 +259,6 @@ func (r *Recorder) onSystemChange(ev core.Event) {
 	}
 	err := r.fs.AppendSystemSection(context.Background(), transcript.AppendSystemSectionCommand{
 		SessionID: r.sessionID,
-		AgentID:   r.agentID,
 		Time:      time.Now(),
 		Type:      typ,
 		Record: transcript.SystemSectionRecord{
@@ -196,14 +292,10 @@ func (r *Recorder) onPreInfer(ev core.Event) {
 
 	err := r.fs.AppendInference(context.Background(), transcript.AppendInferenceCommand{
 		SessionID: r.sessionID,
-		AgentID:   r.agentID,
 		Time:      now,
 		Type:      transcript.InferenceRequested,
 		Record: transcript.InferenceRecord{
 			Turn:         turn,
-			Provider:     r.provider,
-			Model:        r.model,
-			MaxTokens:    r.maxTokens,
 			SystemDigest: ic.SystemDigest,
 			ToolsDigest:  ic.ToolsDigest,
 			MessageIDs:   ic.MessageIDs,
@@ -235,13 +327,10 @@ func (r *Recorder) onPostInfer(ev core.Event) {
 
 	err := r.fs.AppendInference(context.Background(), transcript.AppendInferenceCommand{
 		SessionID: r.sessionID,
-		AgentID:   r.agentID,
 		Time:      now,
 		Type:      transcript.InferenceResponded,
 		Record: transcript.InferenceRecord{
 			Turn:       turn,
-			Provider:   r.provider,
-			Model:      r.model,
 			StopReason: string(resp.StopReason),
 			LatencyMs:  latencyMs,
 			Usage: &transcript.InferenceUsage{

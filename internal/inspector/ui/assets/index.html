@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>gen / inspector</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=Hanken+Grotesk:ital,wght@0,300..900;1,300..900&family=JetBrains+Mono:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="brand">
+    <div class="brand-mark">
+      <span class="brand-prefix">gen</span><span class="brand-slash">/</span><span class="brand-name">inspector</span>
+    </div>
+    <div class="brand-tag">conversation forensics ·&nbsp;<em>read the wire, not the chat</em></div>
+    <div class="brand-spacer"></div>
+    <span id="status" class="status idle"></span>
+    <button id="toggle-prompt" class="toggle">
+      <span class="toggle-icon" aria-hidden="true">⌥</span>
+      <span class="toggle-label">system prompt</span>
+      <span class="toggle-caret">▸</span>
+    </button>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <div class="aside-head">
+        <h2>Sessions</h2>
+        <span class="aside-meta">project log</span>
+      </div>
+      <ul id="session-list" class="session-list"></ul>
+      <div class="aside-foot">
+        <span class="dot"></span>
+        polling · 2s
+      </div>
+    </aside>
+
+    <section id="viewer">
+      <div id="timeline-header">
+        <div class="header-row">
+          <span id="session-meta">No session selected.</span>
+        </div>
+        <div class="header-row filters-row" role="toolbar" aria-label="event type filters">
+          <label class="chip"><input type="checkbox" id="filter-state" checked><span class="chip-dot" data-kind="state"></span>state</label>
+          <label class="chip"><input type="checkbox" id="filter-tools" checked><span class="chip-dot" data-kind="tool"></span>tool</label>
+          <label class="chip"><input type="checkbox" id="filter-system" checked><span class="chip-dot" data-kind="system"></span>system</label>
+          <label class="chip"><input type="checkbox" id="filter-inference" checked><span class="chip-dot" data-kind="inference"></span>inference</label>
+          <label class="chip"><input type="checkbox" id="filter-message" checked><span class="chip-dot" data-kind="message"></span>message</label>
+          <label class="chip"><input type="checkbox" id="filter-hook" checked><span class="chip-dot" data-kind="hook"></span>hook</label>
+          <label class="chip"><input type="checkbox" id="filter-permission" checked><span class="chip-dot" data-kind="permission"></span>permission</label>
+        </div>
+      </div>
+      <div id="timeline" class="timeline" aria-live="polite"></div>
+    </section>
+
+    <section id="detail" class="detail">
+      <div class="detail-rail" aria-hidden="true"></div>
+      <div id="detail-body"><pre class="detail-empty">Select a record from the timeline.<br><em>The record's raw payload renders here. Inference rows additionally render the composed system prompt the model received and the active message chain.</em></pre></div>
+    </section>
+
+    <div id="prompt-backdrop" class="prompt-backdrop"></div>
+
+    <section id="prompt" class="prompt">
+      <div id="prompt-header">
+        <div class="prompt-title-block">
+          <span class="prompt-eyebrow">composed</span>
+          <span class="prompt-title">System Prompt</span>
+        </div>
+        <span id="prompt-meta">— at selected record</span>
+        <div class="prompt-actions">
+          <button id="prompt-expand" title="Toggle full width" aria-label="Toggle full width">⤢</button>
+          <button id="prompt-close" title="Close" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div id="prompt-body" class="prompt-body">
+        <div class="empty">Select a record to see the system prompt the model received at that exact point.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

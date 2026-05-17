@@ -52,7 +52,7 @@ Transcript/session focused suites:
 GOCACHE=/tmp/gocache go test ./internal/transcriptstore ./internal/app/session ./tests/integration/session/... ./tests/integration/cli/...
 ```
 
-Manual transcript persistence checks, including interactive `tmux` flows for `--continue`, `--resume`, `--fork`, compact restore, and tool-result hydration, are documented in `docs/transcriptstore.md`.
+Transcript storage layout, recording rules, and the event model are documented in `docs/inspector.md`.
 
 ### Debug Mode
 

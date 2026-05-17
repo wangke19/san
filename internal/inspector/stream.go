@@ -1,4 +1,4 @@
-package trace
+package inspector
 
 import (
 	"context"
@@ -16,32 +16,39 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, sessionID 
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := os.Stat(path); err != nil {
-		http.NotFound(w, r)
-		return
-	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+
+	// First read happens before SSE headers go out so a missing file 404s
+	// cleanly instead of sending an empty event stream.
+	ctx := r.Context()
+	var offset int64
+	data, next, err := readFromOffset(path, offset)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ctx := r.Context()
-	var offset int64
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	// Send everything on the first pass, then poll for growth. Buffered I/O
-	// means new bytes appear without fsync (cf. C4 — telemetry sits in the
-	// page cache until a turn boundary), so polling is the safe choice.
-	if err := sendNewLines(ctx, w, flusher, path, &offset); err != nil {
+	if err := writeLines(w, flusher, data); err != nil {
 		return
 	}
+	offset = next
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 	keepAlive := time.NewTicker(15 * time.Second)
 	defer keepAlive.Stop()
 
@@ -72,7 +79,14 @@ func sendNewLines(ctx context.Context, w http.ResponseWriter, flusher http.Flush
 	if len(data) == 0 {
 		return ctx.Err()
 	}
-	// Split on newlines and emit each non-empty line as a single SSE message.
+	if err := writeLines(w, flusher, data); err != nil {
+		return err
+	}
+	*offset = next
+	return nil
+}
+
+func writeLines(w http.ResponseWriter, flusher http.Flusher, data []byte) error {
 	start := 0
 	for i, b := range data {
 		if b != '\n' {
@@ -88,7 +102,6 @@ func sendNewLines(ctx context.Context, w http.ResponseWriter, flusher http.Flush
 		}
 	}
 	flusher.Flush()
-	*offset = next
 	return nil
 }
 

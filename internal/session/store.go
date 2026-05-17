@@ -19,12 +19,32 @@ type Store struct {
 	projectID       string
 	projectDir      string
 	transcriptStore *transcript.FileStore
+
+	// lastEmittedState caches the projected state most recently written for each
+	// session so Save emits only changed paths. Cold-start after a process
+	// restart pays one full snapshot per session (no entry in the cache means
+	// every non-default field looks "changed" vs the zero state, which is what
+	// we want — the projector still applies last-wins).
+	lastEmittedState map[string]transcript.State
 }
 
 type Snapshot struct {
 	Metadata SessionMetadata
 	Entries  []Entry
 	Tasks    []tracker.Task
+
+	// OmitMessageWrites skips the per-entry AppendMessage loop in Save. Used
+	// by the main TUI path where the agent's Recorder already persists every
+	// message in causal order via the OnAppend event — running Save's loop on
+	// top would write a second copy under a different ID (the TUI
+	// ChatMessage.ID, which doesn't match the agent's core.Message.ID).
+	//
+	// The subagent path leaves this false: its agent has no Recorder wired,
+	// so Save is the only writer for those messages.
+	//
+	// Entries are still used to derive title / lastPrompt / messageCount in
+	// NormalizeMetadata regardless of this flag.
+	OmitMessageWrites bool
 }
 
 func NewStore(cwd string) (*Store, error) {
@@ -154,7 +174,6 @@ func (s *Store) Save(sess *Snapshot) error {
 
 	now := time.Now()
 	NormalizeMetadata(&sess.Metadata, sess.Entries, s.cwd, now)
-	nodes := EntriesToNodes(sess.Entries, sess.Metadata.ID, sess.Metadata.Cwd, sess.Metadata.CreatedAt, gitBranch)
 
 	ctx := context.Background()
 	id := sess.Metadata.ID
@@ -171,34 +190,54 @@ func (s *Store) Save(sess *Snapshot) error {
 		return err
 	}
 
-	for _, n := range nodes {
-		if err := s.transcriptStore.AppendMessage(ctx, transcript.AppendMessageCommand{
-			SessionID:   id,
-			MessageID:   n.ID,
-			ParentID:    n.ParentID,
-			Time:        n.Time,
-			Cwd:         n.Cwd,
-			GitBranch:   n.GitBranch,
-			AgentID:     n.AgentID,
-			IsSidechain: n.IsSidechain,
-			Role:        n.Role,
-			Content:     n.Content,
-		}); err != nil {
-			return err
+	if !sess.OmitMessageWrites {
+		nodes := EntriesToNodes(sess.Entries, sess.Metadata.ID, sess.Metadata.Cwd, sess.Metadata.CreatedAt, gitBranch)
+		for _, n := range nodes {
+			if err := s.transcriptStore.AppendMessage(ctx, transcript.AppendMessageCommand{
+				SessionID:   id,
+				MessageID:   n.ID,
+				ParentID:    n.ParentID,
+				Time:        n.Time,
+				GitBranch:   n.GitBranch,
+				AgentID:     n.AgentID,
+				IsSidechain: n.IsSidechain,
+				Role:        n.Role,
+				Content:     n.Content,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
-	return s.transcriptStore.PatchState(ctx, transcript.PatchStateCommand{
+	next := transcript.State{
+		Title:      sess.Metadata.Title,
+		LastPrompt: sess.Metadata.LastPrompt,
+		Tag:        sess.Metadata.Tag,
+		Mode:       sess.Metadata.Mode,
+		Tasks:      transcript.TrackerTaskViewsFromTasks(sess.Tasks),
+	}
+	if s.lastEmittedState == nil {
+		s.lastEmittedState = make(map[string]transcript.State)
+	}
+	// On the first save in this process the cache is cold; without
+	// rehydrating prev from disk, a clear (e.g. title "Foo" → "") would
+	// look like zero→zero and emit no op, leaving the stale value on disk.
+	prev, hadPrev := s.lastEmittedState[id]
+	if !hadPrev {
+		if loaded, err := s.transcriptStore.LoadState(ctx, id); err == nil {
+			prev = loaded
+		}
+	}
+	ops := transcript.StateOpsDiff(prev, next)
+	if err := s.transcriptStore.PatchState(ctx, transcript.PatchStateCommand{
 		SessionID: id,
 		Time:      now,
-		Ops: transcript.StateOpsFor(transcript.State{
-			Title:      sess.Metadata.Title,
-			LastPrompt: sess.Metadata.LastPrompt,
-			Tag:        sess.Metadata.Tag,
-			Mode:       sess.Metadata.Mode,
-			Tasks:      transcript.TrackerTaskViewsFromTasks(sess.Tasks),
-		}),
-	})
+		Ops:       ops,
+	}); err != nil {
+		return err
+	}
+	s.lastEmittedState[id] = next
+	return nil
 }
 
 func (s *Store) Fork(sourceID string) (*Snapshot, error) {

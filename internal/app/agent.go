@@ -4,12 +4,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"go.uber.org/zap"
 
 	"github.com/genai-io/gen-code/internal/agent"
 	"github.com/genai-io/gen-code/internal/app/conv"
+	"github.com/genai-io/gen-code/internal/app/input"
 	"github.com/genai-io/gen-code/internal/app/kit"
 	"github.com/genai-io/gen-code/internal/core"
 	"github.com/genai-io/gen-code/internal/hook"
@@ -18,6 +20,7 @@ import (
 	"github.com/genai-io/gen-code/internal/log"
 	"github.com/genai-io/gen-code/internal/mcp"
 	"github.com/genai-io/gen-code/internal/reminder"
+	"github.com/genai-io/gen-code/internal/session/transcript"
 	"github.com/genai-io/gen-code/internal/setting"
 	"github.com/genai-io/gen-code/internal/subagent"
 	"github.com/genai-io/gen-code/internal/tool"
@@ -63,8 +66,35 @@ func (m *model) buildAgentParams() agent.BuildParams {
 
 	maxTokens := kit.GetMaxTokens(m.services.LLM.Store(), m.env.CurrentModel, setting.DefaultMaxTokens)
 	var onEvent func(core.Event)
-	if rec := m.services.Session.NewRecorder("main", m.env.LLMProvider.Name(), m.env.GetModelID(), maxTokens); rec != nil {
+	rec := m.services.Session.NewRecorder("main", m.env.LLMProvider.Name(), m.env.GetModelID(), maxTokens)
+	if rec != nil {
 		onEvent = rec.OnAgentEvent
+		if m.services.Hook != nil {
+			if eng := m.services.Hook.Engine(); eng != nil {
+				eng.SetAuditCallback(func(a hook.HookFiredAudit) {
+					rec.RecordHook(transcript.HookRecord{
+						Event:     a.Event,
+						Source:    a.Source,
+						Matcher:   a.Matcher,
+						Outcome:   a.Outcome,
+						Reason:    a.Reason,
+						LatencyMs: a.Duration.Milliseconds(),
+					})
+				})
+			}
+		}
+		if m.services.Skill != nil {
+			if reg := m.services.Skill.Registry(); reg != nil {
+				reg.SetStateChangeObserver(func(name, previous, current, caller string) {
+					rec.RecordSkillState(transcript.SkillRecord{
+						Name:     name,
+						Previous: previous,
+						Current:  current,
+						Caller:   caller,
+					})
+				})
+			}
+		}
 	}
 
 	return agent.BuildParams{
@@ -93,10 +123,20 @@ func (m *model) buildAgentParams() agent.BuildParams {
 
 		PermissionDecider: func(name string, args map[string]any) agent.PermDecisionResult {
 			decision := m.services.Setting.HasPermissionToUseTool(name, args, m.env.SessionPermissions)
+			mode := m.env.SessionMode()
+			input := marshalPermInput(args)
 			switch decision.Behavior {
 			case setting.Allow:
+				rec.RecordPermissionDecided(transcript.PermissionRecord{
+					Tool: name, Input: input, Decision: permDecisionFor(true), Source: transcript.PermissionSourceConfig,
+					Reason: decision.Reason, Mode: mode,
+				})
 				return agent.PermDecisionResult{Decision: perm.Permit, Reason: decision.Reason}
 			case setting.Deny:
+				rec.RecordPermissionDecided(transcript.PermissionRecord{
+					Tool: name, Input: input, Decision: permDecisionFor(false), Source: transcript.PermissionSourceConfig,
+					Reason: decision.Reason, Mode: mode,
+				})
 				return agent.PermDecisionResult{Decision: perm.Reject, Reason: decision.Reason}
 			default:
 				return agent.PermDecisionResult{
@@ -104,10 +144,25 @@ func (m *model) buildAgentParams() agent.BuildParams {
 					Reason:      decision.Reason,
 					ToolName:    name,
 					Description: decision.Reason,
+					RequestID:   core.NewMessageID(),
 				}
 			}
 		},
 	}
+}
+
+// marshalPermInput serializes the tool args for a permission audit record.
+// Errors are logged but not propagated — audit must never block the decider.
+func marshalPermInput(args map[string]any) json.RawMessage {
+	if len(args) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		log.Logger().Warn("perm input marshal failed", zap.Error(err))
+		return nil
+	}
+	return data
 }
 
 // ============================================================
@@ -229,8 +284,60 @@ func (m *model) HandlePermBridge(req *conv.PermBridgeRequest) tea.Cmd {
 	}
 
 	permReq := m.preparePermissionRequest(req)
+	// Emit permission.required with the metadata about to be rendered to the
+	// user — that way the audit captures the same context the user saw.
+	if rec := m.services.Session.Recorder(); rec != nil {
+		rec.RecordPermissionRequired(transcript.PermissionRecord{
+			RequestID:      req.RequestID,
+			Tool:           req.ToolName,
+			Input:          marshalPermInput(req.Input),
+			Detail:         permDetail(permReq),
+			OptionsOffered: input.BuildApprovalOptions(permReq),
+			Source:         transcript.PermissionSourceAsk,
+			Mode:           m.env.SessionMode(),
+		})
+	}
 	m.userInput.Approval.Show(permReq, m.env.Width, m.env.Height)
 	return nil
+}
+
+// permDetail serializes the *derived* permission context — fields the
+// resolver computed or looked up beyond the raw tool args. Anything that is
+// already a verbatim echo of req.Input (Bash command/description, Skill
+// args/name, the file_path that auditors can read straight from input) is
+// stripped so the audit record doesn't double-store the same values.
+func permDetail(req *perm.PermissionRequest) json.RawMessage {
+	if req == nil {
+		return nil
+	}
+	var payload any
+	switch {
+	case req.SkillMeta != nil:
+		m := req.SkillMeta
+		payload = struct {
+			Description string   `json:"description,omitempty"`
+			ScriptCount int      `json:"scriptCount,omitempty"`
+			RefCount    int      `json:"refCount,omitempty"`
+			Scripts     []string `json:"scripts,omitempty"`
+			References  []string `json:"references,omitempty"`
+		}{m.Description, m.ScriptCount, m.RefCount, m.Scripts, m.References}
+	case req.BashMeta != nil:
+		payload = struct {
+			LineCount int `json:"lineCount,omitempty"`
+		}{req.BashMeta.LineCount}
+	case req.AgentMeta != nil:
+		payload = req.AgentMeta
+	case req.DiffMeta != nil:
+		payload = req.DiffMeta
+	default:
+		return nil
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Logger().Warn("perm detail marshal failed", zap.Error(err))
+		return nil
+	}
+	return data
 }
 
 // ============================================================

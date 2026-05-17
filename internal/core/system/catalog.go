@@ -13,24 +13,44 @@ import (
 
 // Embedded prompt templates. Layout:
 //
-//	prompts/identity.txt              — default agent persona
+//	prompts/identity.txt              — one-line persona preamble
+//	prompts/output.txt                — communication shape (Tone, Updates, Behavior)
+//	prompts/engineering.txt           — engineering defaults (Restraint, Code conventions, Error handling)
 //	prompts/policy.txt                — safety contract (never overridden)
 //	prompts/compact.txt               — conversation compactor prompt
 //	prompts/guidelines/{tools,git,questions,tasks}.txt
 //	prompts/providers/<name>.txt      — provider-specific quirks (optional)
+//
+// Format the LLM sees, top to bottom:
+//
+//	You are Gen Code, …                              (identity, raw preamble)
+//	<output> … </output>                             (how you talk to the user)
+//	<engineering> … </engineering>                   (how you work on code)
+//	<policy> … </policy>                             (safety, never overridden)
+//	<guidelines name="tool-usage"> … </guidelines>
+//	<guidelines name="task-workflow"> … </guidelines>
+//	<guidelines name="when-to-ask"> … </guidelines>
+//	<guidelines name="git-safety"> … </guidelines>   (only when isGit)
+//	<environment> … </environment>
+//
+// Everything after the preamble lives inside a named XML envelope so the
+// model can address each block as a structured unit. Identity is bare
+// because Anthropic's standard preamble shape starts with "You are X".
 //
 //go:embed prompts/*.txt prompts/guidelines/*.txt
 var promptFS embed.FS
 
 // init-time read of every static template. Keeps Build() allocation-free.
 var (
-	cachedIdentity  = loadEmbed("prompts/identity.txt")
-	cachedPolicy    = loadEmbed("prompts/policy.txt")
-	cachedCompact   = loadEmbed("prompts/compact.txt")
-	cachedTools     = loadEmbed("prompts/guidelines/tools.txt")
-	cachedGit       = loadEmbed("prompts/guidelines/git.txt")
-	cachedQuestions = loadEmbed("prompts/guidelines/questions.txt")
-	cachedTasks     = loadEmbed("prompts/guidelines/tasks.txt")
+	cachedIdentity    = loadEmbed("prompts/identity.txt")
+	cachedOutput      = loadEmbed("prompts/output.txt")
+	cachedEngineering = loadEmbed("prompts/engineering.txt")
+	cachedPolicy      = loadEmbed("prompts/policy.txt")
+	cachedCompact     = loadEmbed("prompts/compact.txt")
+	cachedTools       = loadEmbed("prompts/guidelines/tools.txt")
+	cachedGit         = loadEmbed("prompts/guidelines/git.txt")
+	cachedQuestions   = loadEmbed("prompts/guidelines/questions.txt")
+	cachedTasks       = loadEmbed("prompts/guidelines/tasks.txt")
 )
 
 // loadEmbed reads a required embedded prompt and trims surrounding whitespace.
@@ -59,12 +79,21 @@ func loadEmbedOptional(path string) string {
 func applyDefaults(sys core.System, scope core.Scope) {
 	const caller = "system:init"
 	sys.Use(defaultIdentity(), caller)
+	if scope == core.ScopeMain {
+		// Output (Tone / Updates / Behavior) and Engineering (Restraint /
+		// Code conventions / Error handling) are main-agent only.
+		// Subagents get their own charter via WithSubagentIdentity and
+		// shouldn't inherit the main agent's communication style or
+		// engineering defaults.
+		sys.Use(output(), caller)
+		sys.Use(engineering(), caller)
+	}
 	sys.Use(policy(), caller)
-	sys.Use(guidelines("tools", cachedTools), caller)
+	sys.Use(guidelines("tool-usage", cachedTools), caller)
 	if scope == core.ScopeMain {
 		// Task tracking + interactive questions are main-agent behaviors.
-		sys.Use(guidelines("tasks", cachedTasks), caller)
-		sys.Use(guidelines("questions", cachedQuestions), caller)
+		sys.Use(guidelines("task-workflow", cachedTasks), caller)
+		sys.Use(guidelines("when-to-ask", cachedQuestions), caller)
 	}
 }
 
@@ -118,6 +147,28 @@ func policy() core.Section {
 	return core.Section{
 		Slot: core.SlotPolicy, Name: "policy", Source: core.Predefined,
 		Render: func() string { return wrap("policy", nil, cachedPolicy) },
+	}
+}
+
+// output sits at SlotIdentity (after the identity preamble via insertion
+// order). Covers "how you talk to the user" — tone, when/how to give
+// updates, conversational behavior (truth, no sycophancy, exploratory
+// mode). Communication conduct, not engineering conduct.
+func output() core.Section {
+	return core.Section{
+		Slot: core.SlotIdentity, Name: "output", Source: core.Predefined,
+		Render: func() string { return wrap("output", nil, cachedOutput) },
+	}
+}
+
+// engineering sits at SlotIdentity after output. Covers "how you work on
+// code" — restraint (don't over-engineer), code conventions, error-
+// handling methodology. Kept separate from <output> so the model can
+// activate the right cluster for the situation: dialogue vs coding.
+func engineering() core.Section {
+	return core.Section{
+		Slot: core.SlotIdentity, Name: "engineering", Source: core.Predefined,
+		Render: func() string { return wrap("engineering", nil, cachedEngineering) },
 	}
 }
 
@@ -189,7 +240,7 @@ func WithGitGuidelines(isGit bool) Option {
 		if !isGit {
 			return
 		}
-		sys.Use(guidelines("git", cachedGit), "system:init")
+		sys.Use(guidelines("git-safety", cachedGit), "system:init")
 	}
 }
 

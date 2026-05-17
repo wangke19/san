@@ -7,18 +7,29 @@ import (
 )
 
 // PermDecisionResult holds a permission decision and its reason.
+//
+// RequestID is set by the decider when Decision == perm.Prompt so the
+// matching permission.required and permission.decided audit records can be
+// joined. It flows through PermBridgeRequest to the resolver (TUI), which
+// passes it back unchanged when the user/hook decision lands.
 type PermDecisionResult struct {
 	Decision    perm.Decision
 	Reason      string
 	ToolName    string
 	Description string
+	RequestID   string
 }
 
 // PermDecisionFunc evaluates whether a tool call is allowed, denied, or needs prompting.
 type PermDecisionFunc func(name string, args map[string]any) PermDecisionResult
 
 // PermBridgeRequest is a pending permission request sent to the TUI for approval.
+//
+// RequestID carries the correlation token the decider stamped so the TUI
+// can reference the prior permission.required record when emitting
+// permission.decided.
 type PermBridgeRequest struct {
+	RequestID   string
 	ToolName    string
 	Description string
 	Input       map[string]any
@@ -58,6 +69,7 @@ func (pb *PermissionBridge) PermissionFunc() perm.PermissionFunc {
 		}
 
 		req := &PermBridgeRequest{
+			RequestID:   decision.RequestID,
 			ToolName:    decision.ToolName,
 			Description: decision.Description,
 			Input:       input,

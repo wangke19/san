@@ -166,8 +166,8 @@ func TestServiceFullSessionLifecycle(t *testing.T) {
 	if !strings.Contains(firstUserMsg, memoryBody) {
 		t.Error("first user message should carry memory reminder")
 	}
-	if !strings.Contains(firstUserMsg, "<system-reminder>") {
-		t.Error("reminders must be wrapped in <system-reminder>")
+	if !strings.Contains(firstUserMsg, "<system-reminder") {
+		t.Error("reminders must be wrapped in <system-reminder> (with or without source attr)")
 	}
 
 	// User submits "hello again"; queue empty after drain — no reminders.

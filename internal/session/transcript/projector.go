@@ -38,7 +38,7 @@ func Project(records []Record) (*Transcript, error) {
 			if t.UpdatedAt.Before(r.Time) {
 				t.UpdatedAt = r.Time
 			}
-		case StatePatched:
+		case SessionStatePatched:
 			if err := applyStatePatch(&t.State, r.State); err != nil {
 				return nil, err
 			}

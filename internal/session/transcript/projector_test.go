@@ -52,8 +52,8 @@ func TestProjectStartAndAppendMessages(t *testing.T) {
 func TestProjectStatePatchLastWins(t *testing.T) {
 	transcript, err := Project([]Record{
 		{SessionID: "tx-1", Time: time.Now(), Type: SessionStarted},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{PatchTitle("A"), PatchMode("normal")}}},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{PatchTitle("B"), PatchMode("plan")}}},
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{PatchTitle("A"), PatchMode("normal")}}},
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{PatchTitle("B"), PatchMode("plan")}}},
 	})
 	if err != nil {
 		t.Fatalf("Project(): %v", err)
@@ -76,7 +76,7 @@ func TestProjectTasksAndWorktreePatches(t *testing.T) {
 	wt := &WorktreeState{OriginalCwd: "/repo", WorktreePath: "/repo/.wt/1", WorktreeName: "fix-1"}
 	transcript, err := Project([]Record{
 		{SessionID: "tx-1", Time: time.Now(), Type: SessionStarted},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{PatchTasks([]tracker.Task{task}), PatchWorktree(wt)}}},
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{PatchTasks([]tracker.Task{task}), PatchWorktree(wt)}}},
 	})
 	if err != nil {
 		t.Fatalf("Project(): %v", err)
@@ -92,8 +92,8 @@ func TestProjectTasksAndWorktreePatches(t *testing.T) {
 func TestProjectWorktreeNullClears(t *testing.T) {
 	transcript, err := Project([]Record{
 		{SessionID: "tx-1", Time: time.Now(), Type: SessionStarted},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{PatchWorktree(&WorktreeState{WorktreeName: "a"})}}},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{PatchWorktree(nil)}}},
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{PatchWorktree(&WorktreeState{WorktreeName: "a"})}}},
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{PatchWorktree(nil)}}},
 	})
 	if err != nil {
 		t.Fatalf("Project(): %v", err)
@@ -125,7 +125,7 @@ func TestProjectCompactBoundaryTruncatesActiveChain(t *testing.T) {
 func TestProjectUnknownPatchPathIsIgnored(t *testing.T) {
 	tx, err := Project([]Record{
 		{SessionID: "tx-1", Time: time.Now(), Type: SessionStarted},
-		{SessionID: "tx-1", Time: time.Now(), Type: StatePatched, State: &StateRecord{Ops: []PatchOp{
+		{SessionID: "tx-1", Time: time.Now(), Type: SessionStatePatched, State: &StateRecord{Ops: []PatchOp{
 			{Path: "bad.path", Value: json.RawMessage(`"x"`)},
 			PatchTitle("Still applied"),
 		}}},

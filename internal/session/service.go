@@ -29,6 +29,7 @@ type Service interface {
 
 	// tracing
 	NewRecorder(agentID, provider, model string, maxTokens int) *Recorder
+	Recorder() *Recorder
 }
 
 // Compile-time check: *Setup implements Service.

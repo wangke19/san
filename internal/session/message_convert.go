@@ -17,7 +17,11 @@ var inlineImageTokenPattern = regexp.MustCompile(`\[Image #(\d+)\]`)
 // block including tags. Reminders are appended verbatim by reminder.AttachToContent
 // and hook UserPromptSubmit additionalContext flows through the same path, so
 // recognizing the wrapper suffices to mark harness-injected content.
-var systemReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+//
+// Captures the optional source="..." attribute so the transcript can attribute
+// "which provider injected this reminder" (skills-directory, memory-user,
+// hook context, etc.) without parsing the body.
+var systemReminderRe = regexp.MustCompile(`(?s)<system-reminder(?:\s+source="([^"]*)")?>.*?</system-reminder>`)
 
 const SourceReminder = "reminder"
 
@@ -33,7 +37,7 @@ func splitTextByProvenance(text string) []ContentBlock {
 	if text == "" {
 		return nil
 	}
-	matches := systemReminderRe.FindAllStringIndex(text, -1)
+	matches := systemReminderRe.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return []ContentBlock{{Type: "text", Text: text}}
 	}
@@ -45,7 +49,12 @@ func splitTextByProvenance(text string) []ContentBlock {
 		if start > cursor {
 			blocks = append(blocks, ContentBlock{Type: "text", Text: text[cursor:start]})
 		}
-		blocks = append(blocks, ContentBlock{Type: "text", Text: text[start:end], Source: SourceReminder})
+		source := SourceReminder
+		// m[2]/m[3] are the source-capture group; -1 means absent.
+		if len(m) >= 4 && m[2] >= 0 && m[3] >= 0 && m[3] > m[2] {
+			source = SourceReminder + ":" + text[m[2]:m[3]]
+		}
+		blocks = append(blocks, ContentBlock{Type: "text", Text: text[start:end], Source: source})
 		cursor = end
 	}
 	if cursor < len(text) {
@@ -114,7 +123,7 @@ func EntriesToMessages(entries []Entry) []core.Message {
 	for _, entry := range entries {
 		switch entry.Type {
 		case EntryUser:
-			msg := core.Message{Role: core.RoleUser}
+			msg := core.Message{Role: core.RoleUser, ID: entry.UUID}
 			if entry.Message != nil {
 				extractUserContent(entry.Message.Content, &msg)
 			}
@@ -125,7 +134,7 @@ func EntriesToMessages(entries []Entry) []core.Message {
 			}
 			msgs = append(msgs, msg)
 		case EntryAssistant:
-			msg := core.Message{Role: core.RoleAssistant}
+			msg := core.Message{Role: core.RoleAssistant, ID: entry.UUID}
 			if entry.Message != nil {
 				extractAssistantContent(entry.Message.Content, &msg)
 			}

@@ -6,19 +6,25 @@ import (
 )
 
 // Record type values follow <entity>.<verb> (past tense), lowercase,
-// dot-separated. See docs/tracing.md for the full taxonomy.
+// dot-separated. See docs/inspector.md for the full taxonomy.
 const (
+	SchemaVersion = "1"
+
 	SessionStarted       = "session.started"
 	SessionForked        = "session.forked"
 	SessionCompacted     = "session.compacted"
+	SessionStatePatched  = "session.state.patched"
 	MessageAppended      = "message.appended"
-	StatePatched         = "state.patched"
 	InferenceRequested   = "inference.requested"
 	InferenceResponded   = "inference.responded"
 	SystemSectionAdded   = "system.section.added"
 	SystemSectionRemoved = "system.section.removed"
-	ToolsAdded           = "tools.added"
-	ToolsRemoved         = "tools.removed"
+	ToolAdded            = "tool.added"
+	ToolRemoved          = "tool.removed"
+	HookFired            = "hook.fired"
+	PermissionRequired   = "permission.required"
+	PermissionDecided    = "permission.decided"
+	SkillStateChanged    = "skill.state.changed"
 )
 
 const (
@@ -29,6 +35,31 @@ const (
 	PatchPathTasks      = "tasks"
 	PatchPathWorktree   = "worktree"
 )
+
+// Audit-record enum values. Centralized so producers and consumers (viewer,
+// audit tooling) can't drift on spelling.
+const (
+	// HookRecord.Outcome
+	HookOutcomeRan     = "ran"
+	HookOutcomeBlocked = "blocked"
+	HookOutcomeError   = "error"
+	HookOutcomeAsync   = "async"
+
+	// PermissionRecord.Decision
+	PermissionPermit = "permit"
+	PermissionReject = "reject"
+
+	// PermissionRecord.Source
+	PermissionSourceConfig = "config"
+	PermissionSourceUser   = "user"
+	PermissionSourceHook   = "hook"
+	PermissionSourceAsk    = "ask"
+)
+
+// PermissionRecord.Scope is a free-form label owned by the source of the
+// decision (e.g. the TUI approval modal). The transcript schema deliberately
+// does not enumerate values here so adding a new modal option (or a
+// programmatic decision source) doesn't require a schema change.
 
 type Record struct {
 	ID        string    `json:"id"`
@@ -43,12 +74,15 @@ type Record struct {
 	GitBranch   string `json:"gitBranch,omitempty"`
 	AgentID     string `json:"agentId,omitempty"`
 
-	Message   *MessageRecord       `json:"message,omitempty"`
-	State     *StateRecord         `json:"state,omitempty"`
-	Session   *SessionRecord       `json:"session,omitempty"`
-	Inference *InferenceRecord     `json:"inference,omitempty"`
-	System    *SystemSectionRecord `json:"system,omitempty"`
-	Tools     *ToolsRecord         `json:"tools,omitempty"`
+	Message    *MessageRecord       `json:"message,omitempty"`
+	State      *StateRecord         `json:"state,omitempty"`
+	Session    *SessionRecord       `json:"session,omitempty"`
+	Inference  *InferenceRecord     `json:"inference,omitempty"`
+	System     *SystemSectionRecord `json:"system,omitempty"`
+	Tool       *ToolRecord          `json:"tool,omitempty"`
+	Hook       *HookRecord          `json:"hook,omitempty"`
+	Permission *PermissionRecord    `json:"permission,omitempty"`
+	Skill      *SkillRecord         `json:"skill,omitempty"`
 }
 
 type MessageRecord struct {
@@ -70,9 +104,15 @@ type PatchOp struct {
 // session.forked / session.compacted records. The three event types
 // multiplex on a single struct because the fields are sparse and the
 // projector dispatches on Record.Type rather than payload shape.
+//
+// session.started carries every session-wide constant exactly once
+// (provider, model, maxTokens, agentId). Every following record inherits
+// them — they are not restamped per record.
 type SessionRecord struct {
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
+	MaxTokens  int    `json:"maxTokens,omitempty"`
+	AgentID    string `json:"agentId,omitempty"`
 	ParentID   string `json:"parentId,omitempty"`
 	BoundaryID string `json:"boundaryId,omitempty"`
 }
@@ -82,11 +122,12 @@ type SessionRecord struct {
 // sent to the LLM (system prompt, tools, active message chain); the "responded"
 // side captures stop reason, latency, and token usage. Big fields live in the
 // digests — full payloads are reconstructible by replaying preceding records.
+//
+// Provider/Model/MaxTokens are NOT on this record. They are session-wide
+// constants set on session.started and inherited by every turn. Request
+// and response are joined by Turn.
 type InferenceRecord struct {
 	Turn         int    `json:"turn"`
-	Provider     string `json:"provider,omitempty"`
-	Model        string `json:"model,omitempty"`
-	MaxTokens    int    `json:"maxTokens,omitempty"`
 	SystemDigest string `json:"systemDigest,omitempty"`
 	ToolsDigest  string `json:"toolsDigest,omitempty"`
 
@@ -95,8 +136,8 @@ type InferenceRecord struct {
 	MessageIDs []string `json:"messageIds,omitempty"`
 
 	// Response fields — populated on inference.responded only.
-	StopReason string         `json:"stopReason,omitempty"`
-	LatencyMs  int64          `json:"latencyMs,omitempty"`
+	StopReason string          `json:"stopReason,omitempty"`
+	LatencyMs  int64           `json:"latencyMs,omitempty"`
 	Usage      *InferenceUsage `json:"usage,omitempty"`
 }
 
@@ -121,14 +162,30 @@ type SystemSectionRecord struct {
 // from the runtime ToolSchema before writing.
 type ToolSchemaView struct {
 	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"input_schema,omitempty"`
 }
 
-// ToolsRecord carries the payload for tools.added / tools.removed.
-// One tool per record (Add/Remove fire individually); Schema is set on
-// "added", Name on "removed".
-type ToolsRecord struct {
+func (t *ToolSchemaView) UnmarshalJSON(data []byte) error {
+	type alias ToolSchemaView
+	var v struct {
+		alias
+		LegacyParameters json.RawMessage `json:"parameters,omitempty"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*t = ToolSchemaView(v.alias)
+	if len(t.Parameters) == 0 && len(v.LegacyParameters) > 0 {
+		t.Parameters = v.LegacyParameters
+	}
+	return nil
+}
+
+// ToolRecord carries the payload for tool.added / tool.removed. One tool
+// per record (Add/Remove fire individually); Schema is set on "added",
+// Name on "removed".
+type ToolRecord struct {
 	Schema *ToolSchemaView `json:"schema,omitempty"`
 	Name   string          `json:"name,omitempty"`
 	Caller string          `json:"caller,omitempty"`
@@ -157,6 +214,63 @@ type ContentBlock struct {
 
 	// ImageSource is the inlined image data on type=image blocks.
 	ImageSource *ImageSource `json:"imageSource,omitempty"`
+}
+
+// HookRecord carries the payload for hook.fired. One record per
+// completed hook invocation (sync or async). Outcome captures what the
+// hook actually did so the transcript reads as "did this hook block /
+// inject context / approve / fail" without re-parsing hook output.
+type HookRecord struct {
+	Event     string `json:"event"`             // e.g. "PreToolUse", "PostCompact"
+	Source    string `json:"source,omitempty"`  // hook script path / function ID
+	Matcher   string `json:"matcher,omitempty"` // hook config matcher
+	Outcome   string `json:"outcome"`           // "ran" | "blocked" | "error" | "async"
+	Reason    string `json:"reason,omitempty"`  // hook-supplied block/deny message
+	LatencyMs int64  `json:"latencyMs,omitempty"`
+}
+
+// PermissionRecord carries the payload for permission.required and
+// permission.decided. The two share a payload because their fields overlap
+// heavily and joining them by RequestID at replay time is trivial.
+//
+// permission.required is emitted when the config-level check can't decide
+// alone and an external resolver (user prompt, hook) must adjudicate.
+// permission.decided is emitted when a terminal allow/deny is reached
+// (immediately, for config-level allow/deny; later, when the external
+// resolver responds for ask-level decisions).
+//
+// Input carries the tool arguments being adjudicated (Bash command, file
+// path, skill name, etc.) so the transcript is self-sufficient — auditors
+// don't have to cross-reference the surrounding tool_use block to see what
+// was being asked. Recorded as json.RawMessage to preserve the model-facing
+// shape verbatim and tolerate arbitrary tool schemas.
+//
+// Decision and Source are denormalized strings rather than enum constants
+// so the transcript stays decoupled from the perm package's internal types.
+type PermissionRecord struct {
+	RequestID      string          `json:"requestId,omitempty"`      // joins required → decided
+	Tool           string          `json:"tool"`                     // tool name
+	Input          json.RawMessage `json:"input,omitempty"`          // tool args being adjudicated (model intent)
+	Detail         json.RawMessage `json:"detail,omitempty"`         // resolved context the user saw (skill description, bash line count, diff stats, ...)
+	OptionsOffered []string        `json:"optionsOffered,omitempty"` // labels of the choices presented (required only)
+	Decision       string          `json:"decision,omitempty"`       // "permit" | "reject" on decided; absent on required
+	Source         string          `json:"source,omitempty"`         // "config" | "user" | "hook" | "mode"
+	Scope          string          `json:"scope,omitempty"`          // free-form label owned by the source (e.g. modal: "once"/"session"/"persistent")
+	Reason         string          `json:"reason,omitempty"`
+	Mode           string          `json:"mode,omitempty"`      // active permission mode at decision time
+	LatencyMs      int64           `json:"latencyMs,omitempty"` // on decided only: time since required
+}
+
+// SkillRecord carries the payload for skill.state.changed. Emitted whenever
+// a skill transitions between disable / enable / active so the transcript
+// captures "what was the model aware of" at any point. Active skills end up
+// in the reminder pipeline; enable-state skills are user-invokable only;
+// disable hides them entirely.
+type SkillRecord struct {
+	Name     string `json:"name"`
+	Previous string `json:"previous,omitempty"` // disable | enable | active | "" (first observation)
+	Current  string `json:"current"`            // disable | enable | active
+	Caller   string `json:"caller,omitempty"`   // "user:/skills" | "boot" | etc.
 }
 
 type ImageSource struct {

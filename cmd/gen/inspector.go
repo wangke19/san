@@ -16,27 +16,27 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/genai-io/gen-code/internal/inspector"
 	"github.com/genai-io/gen-code/internal/session"
-	"github.com/genai-io/gen-code/internal/trace"
 )
 
 var (
-	traceAddr   string
-	traceNoOpen bool
+	inspectorAddr   string
+	inspectorNoOpen bool
 )
 
 func init() {
-	traceCmd.Flags().StringVar(&traceAddr, "addr", "127.0.0.1:0", "Bind address (127.0.0.1 only; do not expose externally)")
-	traceCmd.Flags().BoolVar(&traceNoOpen, "no-open", false, "Print the URL but don't launch the browser")
-	rootCmd.AddCommand(traceCmd)
+	inspectorCmd.Flags().StringVar(&inspectorAddr, "addr", "127.0.0.1:0", "Bind address (127.0.0.1 only; do not expose externally)")
+	inspectorCmd.Flags().BoolVar(&inspectorNoOpen, "no-open", false, "Print the URL but don't launch the browser")
+	rootCmd.AddCommand(inspectorCmd)
 }
 
-var traceCmd = &cobra.Command{
-	Use:   "trace",
-	Short: "Open the local trace viewer for this project's sessions",
+var inspectorCmd = &cobra.Command{
+	Use:   "inspector",
+	Short: "Open the local inspector for this project's sessions",
 	Long: `Launch a localhost web server that visualizes session transcripts
-recorded under ~/.gen/projects/<encoded-cwd>/transcripts/. The viewer is
-read-only and runs until Ctrl-C.
+recorded under ~/.gen/projects/<encoded-cwd>/transcripts/. The inspector
+is read-only and runs until Ctrl-C.
 
 By default the server binds 127.0.0.1 on a random port and opens the page
 in your default browser. Use --no-open to skip the browser launch and
@@ -56,17 +56,17 @@ in your default browser. Use --no-open to skip the browser launch and
 
 		// Refuse to bind to anything that isn't loopback — guards against a
 		// fat-fingered --addr that would expose conversation history.
-		if err := requireLoopback(traceAddr); err != nil {
+		if err := requireLoopback(inspectorAddr); err != nil {
 			return err
 		}
 
-		ln, err := net.Listen("tcp", traceAddr)
+		ln, err := net.Listen("tcp", inspectorAddr)
 		if err != nil {
-			return fmt.Errorf("listen %s: %w", traceAddr, err)
+			return fmt.Errorf("listen %s: %w", inspectorAddr, err)
 		}
 		url := fmt.Sprintf("http://%s", ln.Addr().String())
 
-		srv := &http.Server{Handler: trace.New(projectDir).Handler()}
+		srv := &http.Server{Handler: inspector.New(projectDir).Handler()}
 
 		// Shutdown on SIGINT/SIGTERM.
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -78,8 +78,8 @@ in your default browser. Use --no-open to skip the browser launch and
 			_ = srv.Shutdown(shutCtx)
 		}()
 
-		fmt.Printf("gen trace: serving %s\n  project: %s\n", url, projectDir)
-		if !traceNoOpen {
+		fmt.Printf("gen inspector: serving %s\n  project: %s\n", url, projectDir)
+		if !inspectorNoOpen {
 			openBrowser(url)
 		}
 
@@ -99,8 +99,8 @@ func projectDirFor(cwd string) string {
 }
 
 // requireLoopback rejects any bind address whose host isn't 127.0.0.1/::1.
-// Localhost-only is the security model — the trace contains everything the
-// model saw, including any secrets in tool inputs.
+// Localhost-only is the security model — the transcripts contain everything
+// the model saw, including any secrets in tool inputs.
 func requireLoopback(addr string) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

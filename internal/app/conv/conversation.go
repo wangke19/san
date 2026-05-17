@@ -217,6 +217,7 @@ func (m ConversationModel) ConvertToProviderFrom(startIdx int) []core.Message {
 		}
 
 		providerMsg := core.Message{
+			ID:                msg.ID,
 			Role:              msg.Role,
 			Content:           msg.Content,
 			DisplayContent:    msg.DisplayContent,

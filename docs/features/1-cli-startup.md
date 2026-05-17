@@ -45,7 +45,7 @@ TestPlanMode_AllowsReadTools      — --plan flag: read tools work normally
 
 ## Interactive Tests (tmux)
 
-For transcript-specific startup validation, including `-c`, `-r`, `--fork`, and project transcript layout, see `docs/transcriptstore.md`.
+For transcript-specific startup validation, including `-c`, `-r`, `--fork`, and project transcript layout, see `docs/inspector.md`.
 
 ```bash
 tmux new-session -d -s t_cli -x 200 -y 50

@@ -114,7 +114,16 @@ func (e *Engine) executeMatchedHook(ctx context.Context, hook matchedHook, input
 }
 
 func (e *Engine) executeDetachedHook(ctx context.Context, hook matchedHook, input HookInput) {
+	start := time.Now()
 	result := e.executeMatchedHook(ctx, hook, input)
+	e.audit(HookFiredAudit{
+		Event:    string(hook.Event),
+		Source:   matchedHookIdentity(hook),
+		Matcher:  hook.Matcher,
+		Outcome:  outcomeOf(result),
+		Reason:   reasonOf(result),
+		Duration: time.Since(start),
+	})
 	if hook.Command == nil || !hook.Command.AsyncRewake || !result.ShouldBlock {
 		return
 	}

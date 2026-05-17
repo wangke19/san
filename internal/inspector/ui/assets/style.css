@@ -1,0 +1,1090 @@
+/* gen/inspector — forensic lab journal
+ *
+ * A reading-room aesthetic for a debugging tool: this is for staring at for
+ * an hour while you reconstruct what the model saw. Calm dark warm surface,
+ * hairline rules, optical-sized serif headers (Fraunces), monospace data
+ * (JetBrains Mono), characterful sans for chrome (Hanken Grotesk). Amber is
+ * the only signal color; oxblood appears only when something is wrong;
+ * everything else is bone on ink. Generous whitespace, tabular figures,
+ * no soft shadows except where a panel literally floats.
+ */
+
+:root {
+  /* Surface ------------------------------------------------------------ */
+  --ink-0:   #08090c;       /* the void */
+  --ink-1:   #0e0f13;       /* page */
+  --ink-2:   #14161b;       /* card */
+  --ink-3:   #1c1f26;       /* hover */
+  --ink-4:   #262a33;       /* well */
+  --rule:    #272a33;       /* hairline */
+  --rule-2:  #1a1d24;       /* whisper rule */
+
+  /* Type --------------------------------------------------------------- */
+  --bone:    #e8e1d2;       /* primary text — warm bone */
+  --bone-2:  #c2b89f;       /* secondary */
+  --bone-3:  #847d6c;       /* tertiary, muted */
+  --bone-4:  #4f4c44;       /* near-silent */
+
+  /* Signal ------------------------------------------------------------- */
+  --amber:   #d99a3e;       /* live, active, accent */
+  --amber-2: #b88330;       /* amber pressed */
+  --amber-3: #6e5524;       /* amber silenced */
+  --oxblood: #c45a5a;       /* integrity / error */
+  --olive:   #98a07a;       /* ok / success */
+  --rose:    #c98a9b;       /* hook */
+  --indigo:  #9a8fb8;       /* inference */
+  --sage:    #82a08c;       /* tool */
+  --sun:     #d6b75e;       /* system */
+  --slate:   #7a8390;       /* state */
+  --brass:   #b8a87b;       /* highlight */
+
+  /* Per-event swatches keep distinct identity in a calm palette. */
+  --c-session:    var(--brass);
+  --c-message:    #b5cad8;
+  --c-inference:  var(--indigo);
+  --c-tool:       var(--sage);
+  --c-system:     var(--sun);
+  --c-state:      var(--slate);
+  --c-hook:       var(--rose);
+  --c-permission: var(--oxblood);
+  --c-unknown:    #555;
+
+  /* Type stacks. Graceful fallbacks for offline. */
+  --font-display: "Fraunces", "Charter", "Iowan Old Style", "Georgia", serif;
+  --font-sans:    "Hanken Grotesk", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--ink-1);
+  color: var(--bone);
+  font-size: 14px;
+  line-height: 1.55;
+  font-feature-settings: "ss01", "ss02", "tnum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  letter-spacing: 0.005em;
+}
+
+/* Subtle film grain over the whole page. Pinned, non-interactive, very low
+ * opacity — registers as warmth rather than texture. */
+.grain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.6;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.92' numOctaves='2' seed='5' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 0.95  0 0 0 0 0.82  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ── Brand bar ─────────────────────────────────────────────────────────── */
+
+header.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 1.4rem;
+  padding: 0.95rem 1.4rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+  background: linear-gradient(180deg, var(--ink-0) 0%, var(--ink-1) 100%);
+  position: relative;
+  z-index: 5;
+}
+header.brand::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -1px 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--amber) 20%, var(--amber-2) 50%, transparent 100%);
+  opacity: 0.55;
+}
+
+.brand-mark {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+  font-weight: 350;
+  font-variation-settings: "SOFT" 100, "WONK" 1;
+}
+.brand-prefix { color: var(--bone-2); font-style: italic; font-weight: 300; }
+.brand-slash  { color: var(--amber); margin: 0 0.05em; font-weight: 400; }
+.brand-name   { color: var(--bone);  font-weight: 500; }
+
+.brand-tag {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  color: var(--bone-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding-bottom: 0.2rem;
+}
+.brand-tag em {
+  font-family: var(--font-display);
+  font-style: italic;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  color: var(--bone-2);
+}
+
+.brand-spacer { flex: 1; }
+
+.status {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--rule);
+  background: var(--ink-2);
+  color: var(--bone-3);
+  text-transform: lowercase;
+  border-radius: 1px;
+}
+.status:empty { display: none; }
+.status.live {
+  color: var(--amber);
+  border-color: var(--amber-3);
+  background: rgba(217, 154, 62, 0.05);
+}
+.status.live::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  margin-right: 0.5em;
+  vertical-align: middle;
+  box-shadow: 0 0 8px var(--amber);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1.0; }
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  color: var(--bone-2);
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  border-radius: 1px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.toggle:hover { color: var(--bone); border-color: var(--bone-4); }
+.toggle.on    { color: var(--amber); border-color: var(--amber-3); background: rgba(217, 154, 62, 0.06); }
+.toggle-icon  { font-family: var(--font-mono); font-size: 0.7rem; opacity: 0.7; }
+.toggle-label { font-variant: small-caps; letter-spacing: 0.08em; }
+.toggle-caret { font-size: 0.65rem; opacity: 0.7; }
+.toggle.on .toggle-caret { transform: rotate(90deg); }
+
+/* ── Main grid ─────────────────────────────────────────────────────────── */
+
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1.05fr 1fr;
+  min-height: 0;
+  position: relative;
+  background: var(--ink-1);
+}
+
+/* Grid items default to `min-height: auto`, which lets them grow past the
+   row track and breaks `overflow: auto` on their children. Pin each column
+   to the row height so internal scrolling actually works. */
+main > aside,
+main > #viewer,
+main > .detail {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+
+aside {
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+.aside-head {
+  padding: 1.1rem 1.1rem 0.6rem;
+  border-bottom: 1px solid var(--rule-2);
+}
+.aside-head h2 {
+  font-family: var(--font-display);
+  font-weight: 350;
+  font-style: italic;
+  font-size: 1.05rem;
+  letter-spacing: 0.005em;
+  margin: 0 0 0.15rem;
+  color: var(--bone);
+  font-variation-settings: "SOFT" 100;
+}
+.aside-meta {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--bone-3);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.session-list {
+  list-style: none;
+  padding: 0.5rem 0;
+  margin: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.session-list li {
+  position: relative;
+  padding: 0.65rem 1.1rem 0.65rem 1.35rem;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  border-bottom: 1px dashed var(--rule-2);
+  transition: background 0.12s, border-left-color 0.12s;
+}
+.session-list li:hover { background: var(--ink-2); }
+.session-list li.active {
+  background: var(--ink-2);
+  border-left-color: var(--amber);
+}
+.session-list li.active::before {
+  content: "›";
+  position: absolute;
+  left: 0.5rem; top: 50%; transform: translateY(-55%);
+  color: var(--amber);
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+}
+.session-list li > div:first-child {
+  font-family: var(--font-display);
+  font-size: 0.92rem;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+  color: var(--bone);
+  margin-bottom: 0.15rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-variation-settings: "SOFT" 60;
+}
+.session-list .id {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--bone-3);
+  letter-spacing: 0.04em;
+  display: block;
+}
+.session-list .session-empty {
+  color: var(--bone-3);
+  font-style: italic;
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100;
+  font-size: 0.92rem;
+  border-left: none;
+  cursor: default;
+  border-bottom: none;
+  padding-top: 1.4rem;
+  text-align: left;
+  line-height: 1.5;
+}
+
+.aside-foot {
+  padding: 0.65rem 1.1rem;
+  border-top: 1px solid var(--rule-2);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--bone-3);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+.aside-foot .dot {
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--olive);
+  margin-right: 0.4em;
+  vertical-align: middle;
+  opacity: 0.75;
+}
+
+/* ── Viewer (timeline) ──────────────────────────────────────────────────── */
+
+#viewer {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--rule);
+  min-width: 0;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 28px,
+      rgba(255, 255, 255, 0.012) 28px,
+      rgba(255, 255, 255, 0.012) 29px
+    ),
+    var(--ink-1);
+}
+
+#timeline-header {
+  border-bottom: 1px solid var(--rule);
+  background: var(--ink-1);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.header-row {
+  padding: 0.55rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.header-row + .header-row {
+  border-top: 1px solid var(--rule-2);
+}
+#session-meta {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--bone-3);
+  letter-spacing: 0.02em;
+}
+
+/* Filter chips: hide the native checkbox, style the label as a small chip
+   that flips on/off with a colored swatch dot. */
+.filters-row { gap: 0.4rem; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--bone-3);
+  padding: 0.2rem 0.55rem 0.2rem 0.45rem;
+  border: 1px solid var(--rule);
+  background: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 1px;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.chip:hover { color: var(--bone-2); border-color: var(--bone-4); }
+.chip input { display: none; }
+.chip:has(input:checked) { color: var(--bone); border-color: var(--bone-4); background: var(--ink-3); }
+.chip-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--c-unknown);
+  opacity: 0.45;
+  transition: opacity 0.12s;
+}
+.chip:has(input:checked) .chip-dot { opacity: 1; }
+.chip-dot[data-kind="state"]      { background: var(--c-state); }
+.chip-dot[data-kind="tool"]       { background: var(--c-tool); }
+.chip-dot[data-kind="system"]     { background: var(--c-system); }
+.chip-dot[data-kind="inference"]  { background: var(--c-inference); }
+.chip-dot[data-kind="message"]    { background: var(--c-message); }
+.chip-dot[data-kind="hook"]       { background: var(--c-hook); }
+.chip-dot[data-kind="permission"] { background: var(--c-permission); }
+
+/* Timeline rows ------------------------------------------------------- */
+
+.timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.3rem 0 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bone-4) transparent;
+}
+.timeline::-webkit-scrollbar { width: 8px; }
+.timeline::-webkit-scrollbar-thumb { background: var(--bone-4); border-radius: 0; }
+.timeline::-webkit-scrollbar-track { background: transparent; }
+
+.row {
+  display: grid;
+  grid-template-columns: 76px 6px 1fr;
+  gap: 0.55rem;
+  padding: 0.35rem 1rem 0.35rem 1.3rem;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  position: relative;
+  transition: background 0.1s, border-left-color 0.1s;
+}
+.row:hover { background: var(--ink-2); }
+.row.active {
+  background: var(--ink-2);
+  border-left-color: var(--amber);
+}
+.row.active::before {
+  content: "";
+  position: absolute;
+  left: -2px; top: 50%; transform: translateY(-50%);
+  width: 2px; height: 16px;
+  background: var(--amber);
+  box-shadow: 0 0 6px var(--amber);
+}
+.row .time {
+  color: var(--bone-3);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  align-self: center;
+  letter-spacing: 0.03em;
+}
+.row .swatch {
+  align-self: stretch;
+  width: 3px;
+  margin-left: 1px;
+  border-radius: 1px;
+  opacity: 0.85;
+}
+.row .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bone);
+  align-self: center;
+}
+
+.row.session    .swatch { background: var(--c-session); }
+.row.message    .swatch { background: var(--c-message); }
+.row.inference  .swatch { background: var(--c-inference); }
+.row.tool       .swatch { background: var(--c-tool); }
+.row.system     .swatch { background: var(--c-system); }
+.row.state      .swatch { background: var(--c-state); }
+.row.hook       .swatch { background: var(--c-hook); }
+.row.permission .swatch { background: var(--c-permission); }
+.row.unknown    .swatch { background: var(--c-unknown); }
+
+/* Tool-result messages are role=user on the wire but functionally belong
+ * to the tool flow. Re-color the swatch and a left tick so the timeline
+ * groups them with their preceding tool_use rather than with real user
+ * prompts. */
+.row.message.tool-result .swatch { background: var(--c-tool); }
+.row.message.tool-result .label  { color: var(--bone-2); }
+
+/* Off-chain / integrity-bad indicators */
+.row.off-chain { opacity: 0.42; }
+.row.off-chain .label::before {
+  content: "·off·";
+  color: var(--bone-3);
+  font-style: italic;
+  margin-right: 0.5em;
+  font-family: var(--font-display);
+}
+/* Rule-matched permission decisions (source=config) dim back so the eye lands
+   on the actual decision points (ask path + user response) first. */
+.row.auto-decided        { opacity: 0.6; }
+.row.auto-decided .label { color: var(--bone-2); }
+.row.integrity-bad {
+  background: linear-gradient(90deg, rgba(196, 90, 90, 0.13) 0%, transparent 65%);
+  border-left-color: var(--oxblood);
+}
+.row.integrity-bad .label::after {
+  content: "  ✗  digest drift";
+  color: var(--oxblood);
+  font-style: italic;
+  font-family: var(--font-display);
+  margin-left: 0.5em;
+  letter-spacing: 0.01em;
+}
+
+/* Integrity banner — a thin red rule + small caps italic notice rather than
+   a loud red box. The bar reads as a museum label. */
+.integrity-banner {
+  position: relative;
+  padding: 0.55rem 1rem 0.55rem 1.4rem;
+  background: linear-gradient(90deg, rgba(196, 90, 90, 0.09), transparent 80%);
+  color: var(--oxblood);
+  border-bottom: 1px solid rgba(196, 90, 90, 0.4);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 0.82rem;
+  letter-spacing: 0.005em;
+  line-height: 1.5;
+  font-variation-settings: "SOFT" 80;
+}
+.integrity-banner::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--oxblood);
+}
+
+/* ── Integrity detail rendering ───────────────────────────────────────── */
+
+.integrity-line {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  margin: 2px 0;
+}
+.integrity-ok { color: var(--olive); }
+.integrity-bad-row { color: var(--oxblood); }
+.integrity-diff {
+  margin: 6px 0 0 1em;
+  border-left: 2px solid var(--oxblood);
+  padding: 4px 0 4px 10px;
+  background: rgba(196, 90, 90, 0.04);
+}
+.integrity-diff-row {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre;
+  line-height: 1.5;
+}
+.integrity-match   { color: var(--bone-3); }
+.integrity-missing { color: var(--oxblood); }
+.integrity-extra   { color: var(--amber); }
+.integrity-legend {
+  margin: 6px 0 0 1em;
+  font-size: 0.72rem;
+  color: var(--bone-3);
+  font-style: italic;
+}
+
+/* ── Detail pane ───────────────────────────────────────────────────────── */
+
+.detail {
+  position: relative;
+  background: var(--ink-1);
+  display: flex;
+  flex-direction: column;
+}
+.detail-rail {
+  position: absolute;
+  left: 1.4rem; top: 1.4rem; bottom: 1.4rem;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, var(--rule) 12%, var(--rule) 88%, transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+#detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1.4rem 1.6rem 2.4rem 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  position: relative;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bone-4) transparent;
+}
+.detail-empty {
+  color: var(--bone-3);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 0.95rem;
+  line-height: 1.7;
+  font-variation-settings: "SOFT" 100;
+}
+.detail-empty em {
+  display: block;
+  font-style: italic;
+  font-size: 0.82rem;
+  color: var(--bone-4);
+  margin-top: 0.6em;
+  max-width: 38em;
+  line-height: 1.55;
+}
+#detail-body pre {
+  margin: 0 0 0.6em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+/* Section dividers inside the detail pane — small caps eyebrow + hairline
+   underline. Used by app.js's sectionHeader() helper. */
+.section-header {
+  margin: 1.6em 0 0.6em;
+  padding-bottom: 0.3em;
+  color: var(--bone-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+}
+.section-header::before {
+  content: "—";
+  color: var(--amber);
+  margin-right: 0.45em;
+}
+.section-header:first-child { margin-top: 0.4em; }
+
+/* ── System Prompt panel (floating overlay) ────────────────────────────── */
+
+.prompt-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 9, 12, 0.55);
+  backdrop-filter: blur(2px);
+  display: none;
+  z-index: 9;
+}
+main.show-prompt .prompt-backdrop { display: block; }
+
+.prompt {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  /* Default mode: a side reference panel (~50% of viewport). The wide
+   * toggle below lets the user reclaim almost the full window for
+   * intensive prompt review — the gap between the two has to feel real,
+   * not cosmetic, otherwise the toggle is dead weight. */
+  width: 50%;
+  min-width: 520px;
+  max-width: 960px;
+  background: var(--ink-1);
+  border-left: 1px solid var(--amber-3);
+  box-shadow:
+    -12px 0 32px rgba(0, 0, 0, 0.55),
+    -1px 0 0 0 var(--amber-3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 10;
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), width 0.2s ease;
+}
+main.show-prompt .prompt { transform: translateX(0); }
+main.show-prompt.prompt-wide .prompt {
+  width: calc(100% - 60px);
+  max-width: none;
+}
+
+#prompt-header {
+  padding: 0.95rem 1.2rem 0.85rem;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  background: linear-gradient(180deg, var(--ink-0), var(--ink-1));
+  position: relative;
+}
+#prompt-header::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -1px 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--amber) 0, transparent 30%);
+  opacity: 0.4;
+}
+.prompt-title-block {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+.prompt-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--amber);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 0.3rem;
+}
+.prompt-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 350;
+  font-size: 1.15rem;
+  color: var(--bone);
+  font-variation-settings: "SOFT" 100, "WONK" 1;
+  letter-spacing: -0.005em;
+}
+#prompt-meta {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--bone-3);
+  align-self: center;
+  letter-spacing: 0.02em;
+}
+.prompt-actions { display: flex; gap: 0.35rem; align-self: center; }
+#prompt-header button {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--bone-3);
+  background: transparent;
+  border: 1px solid var(--rule);
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+  border-radius: 1px;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+#prompt-header button:hover {
+  color: var(--bone);
+  border-color: var(--bone-4);
+  background: var(--ink-2);
+}
+
+.prompt-body {
+  flex: 1;
+  overflow: auto;
+  padding: 1.4rem 1.8rem 2rem;
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: var(--bone);
+  scrollbar-width: thin;
+  scrollbar-color: var(--bone-4) transparent;
+}
+.prompt-body .empty {
+  color: var(--bone-3);
+  font-style: italic;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  max-width: 30em;
+  font-variation-settings: "SOFT" 100;
+}
+
+/* Markdown rendering inside prompt body.
+ *
+ * Hierarchy matches gen-code's actual system-prompt structure:
+ *
+ *   h1.prompt-xml — top-level XML envelopes (<output>, <engineering>,
+ *         <policy>, <guidelines name="...">, <environment>). The
+ *         structural backbone — visually heaviest cue. Mono uppercase
+ *         signals "structured block", oxblood tick + rule signals
+ *         "section boundary".
+ *   h1   — top-level markdown # headings. Same hierarchical level as
+ *         h1.prompt-xml but for user-authored prose content (custom
+ *         identity, AGENT.md, etc.). Rare in the default prompt; coded
+ *         as italic Fraunces with amber tick to read as "prose section"
+ *         rather than "structured block".
+ *   h2   — subsection inside any top-level block (## Tone, ## Updates,
+ *         ## Behavior under <output>, etc.). Italic, no chrome, just
+ *         smaller text — clearly subordinate to the enclosing block.
+ *   h3   — minor label / eyebrow. Mono uppercase amber.
+ *   h4   — smaller italic label.
+ *
+ * The opening section needs no rule above it — :first-child suppresses
+ * the divider so the body doesn't start with an orphan line.
+ */
+.prompt-body h1,
+.prompt-body h2,
+.prompt-body h3,
+.prompt-body h4 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-variation-settings: "SOFT" 80;
+  color: var(--bone);
+  line-height: 1.22;
+  letter-spacing: -0.005em;
+}
+
+/* h1.prompt-xml — top-level XML envelope. Visual heavyweight: mono
+ * uppercase at a substantial size, thick oxblood tick, generous
+ * vertical breathing room so the eye lands on it as the section start.
+ * Listed BEFORE plain h1 so that the more specific class selector wins
+ * cleanly when both classes coexist. */
+.prompt-body h1.prompt-xml {
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin: 3em 0 0.9em;
+  padding-top: 1.5em;
+  border-top: 1px solid var(--rule);
+  position: relative;
+  font-variation-settings: normal;
+}
+.prompt-body h1.prompt-xml::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 56px;
+  height: 3px;
+  background: var(--oxblood);
+}
+.prompt-body h1.prompt-xml:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.prompt-body h1.prompt-xml:first-child::before { display: none; }
+
+/* h1 (plain markdown) — peer of h1.prompt-xml in hierarchy but reserved
+ * for user-authored prose. Italic Fraunces with amber tick reads as
+ * "prose section" instead of "structured block". */
+.prompt-body h1 {
+  font-size: 1.4rem;
+  font-style: italic;
+  margin: 2.6em 0 0.7em;
+  padding-top: 1.2em;
+  border-top: 1px solid var(--rule);
+  position: relative;
+  font-variation-settings: "SOFT" 100, "WONK" 1;
+}
+.prompt-body h1::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 40px;
+  height: 2px;
+  background: var(--amber);
+}
+.prompt-body h1:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.prompt-body h1:first-child::before { display: none; }
+
+/* h2 — subsection inside an enclosing block. Smaller and muted so the
+ * eye reads "this is a child of the section above". No rule / tick —
+ * those belong to top-level only. */
+.prompt-body h2 {
+  font-size: 1.0rem;
+  font-style: italic;
+  color: var(--bone-2);
+  margin: 1.6em 0 0.35em;
+}
+
+.prompt-body h3 {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: var(--amber);
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  margin: 1.4em 0 0.35em;
+}
+
+.prompt-body h4 {
+  font-size: 0.9rem;
+  color: var(--bone-3);
+  font-style: italic;
+  margin: 1.1em 0 0.3em;
+}
+
+/* <environment> block — key:value pairs as a two-column mono table.
+ * Without this, the markdown renderer collapses them into one paragraph. */
+.prompt-body .prompt-env {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25em 1.4em;
+  margin: 0.8em 0 0.4em;
+  padding: 0.6em 0.9em;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid var(--oxblood);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.prompt-body .prompt-env dt {
+  color: var(--bone-3);
+  letter-spacing: 0.02em;
+}
+.prompt-body .prompt-env dd {
+  margin: 0;
+  color: var(--bone);
+}
+.prompt-body p {
+  margin: 0.55em 0;
+}
+.prompt-body ul,
+.prompt-body ol {
+  margin: 0.5em 0 0.8em 0;
+  padding-left: 1.3em;
+}
+
+/* prose-inline lets renderProseBlock / renderToolSchema reuse the
+ * .prompt-body markdown typography in a compact embedded layout — without
+ * inheriting the panel's full-bleed padding, scrolling, or wide line cap. */
+.prose-inline {
+  padding: 6px 10px;
+  background: rgba(255,255,255,0.03);
+  border-left: 2px solid var(--bone-4);
+  margin: 0;
+  overflow: visible;
+}
+.prose-inline p,
+.prose-inline ul,
+.prose-inline ol {
+  max-width: none;
+}
+
+.prose-block { margin: 2px 0 6px 1em; }
+.prose-block-raw { margin: 2px 0 0; }
+.prose-block-raw > summary {
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: var(--bone-3);
+}
+
+.tool-schema { margin: 6px 0 10px 1em; }
+.tool-schema-label {
+  font-size: 0.75rem;
+  color: var(--bone-3);
+  margin-top: 4px;
+}
+.tool-schema-details { margin: 4px 0; }
+.tool-schema-details > summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--bone-3);
+}
+.tool-schema-pre {
+  margin: 4px 0;
+  opacity: 0.85;
+}
+.prompt-body li {
+  margin: 0.18em 0;
+  padding-left: 0.2em;
+}
+.prompt-body ul li::marker { color: var(--amber); }
+.prompt-body ol li::marker {
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum";
+}
+.prompt-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--ink-2);
+  color: var(--amber);
+  padding: 0.08em 0.35em;
+  border-radius: 1px;
+  border: 1px solid var(--rule-2);
+}
+.prompt-body pre {
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--amber-3);
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  margin: 0.85em 0;
+  border-radius: 1px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.prompt-body pre code {
+  background: none;
+  padding: 0;
+  border: none;
+  color: var(--bone);
+}
+.prompt-body blockquote {
+  margin: 0.85em 0;
+  padding: 0.3em 0 0.3em 1em;
+  border-left: 2px solid var(--brass);
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--bone-2);
+  font-variation-settings: "SOFT" 80;
+}
+.prompt-body hr {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 1.8em 0;
+  position: relative;
+}
+.prompt-body hr::before {
+  content: "❦";
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--ink-1);
+  padding: 0 0.6em;
+  color: var(--bone-4);
+  font-family: var(--font-display);
+}
+.prompt-body a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-decoration-color: var(--amber-3);
+  text-underline-offset: 2px;
+}
+.prompt-body a:hover { text-decoration-color: var(--amber); }
+.prompt-body table {
+  border-collapse: collapse;
+  margin: 0.85em 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.prompt-body th,
+.prompt-body td {
+  border: 1px solid var(--rule);
+  padding: 0.35em 0.7em;
+}
+.prompt-body th {
+  background: var(--ink-2);
+  color: var(--bone-2);
+  font-weight: 500;
+  text-align: left;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+.prompt-body strong { color: var(--bone); font-weight: 600; }
+.prompt-body em     { color: var(--bone-2); font-style: italic; }
+
+/* Scrollbar treatment for any scrollable region. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: var(--bone-4);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--bone-3); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Selection — keep on-brand. */
+::selection {
+  background: rgba(217, 154, 62, 0.28);
+  color: var(--bone);
+}
+
+/* Reduced motion respect. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}
+
+/* Narrow viewport — keep layout legible if someone resizes. */
+@media (max-width: 1100px) {
+  main { grid-template-columns: 230px 1fr 1fr; }
+  .brand-tag { display: none; }
+}

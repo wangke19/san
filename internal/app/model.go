@@ -319,8 +319,9 @@ func (m *model) PersistSession() error {
 			LastPrompt: session.ExtractLastUserText(entries),
 			Mode:       m.env.SessionMode(),
 		},
-		Entries: entries,
-		Tasks:   m.services.Tracker.Export(),
+		Entries:           entries,
+		Tasks:             m.services.Tracker.Export(),
+		OmitMessageWrites: m.services.Session.Recorder() != nil,
 	}
 
 	if sess.Metadata.Title == "" || sess.Metadata.ID == "" {
@@ -371,8 +372,9 @@ func (m *model) persistSessionCmd() tea.Cmd {
 			LastPrompt: session.ExtractLastUserText(entries),
 			Mode:       m.env.SessionMode(),
 		},
-		Entries: entries,
-		Tasks:   m.services.Tracker.Export(),
+		Entries:           entries,
+		Tasks:             m.services.Tracker.Export(),
+		OmitMessageWrites: m.services.Session.Recorder() != nil,
 	}
 
 	if sess.Metadata.Title == "" {

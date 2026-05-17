@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,4 +55,44 @@ func TestPatchPathConstantsAreStable(t *testing.T) {
 	if PatchPathWorktree != "worktree" {
 		t.Fatalf("PatchPathWorktree = %q", PatchPathWorktree)
 	}
+}
+
+func TestToolSchemaViewUsesModelSchemaShape(t *testing.T) {
+	rec := Record{
+		ID:        "rec-1",
+		SessionID: "tx-1",
+		Type:      ToolAdded,
+		Tool: &ToolRecord{Schema: &ToolSchemaView{
+			Name:        "Read",
+			Description: "",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal(): %v", err)
+	}
+	if !json.Valid(data) {
+		t.Fatalf("invalid json: %s", data)
+	}
+	if got := string(data); !containsAll(got, `"description":""`, `"input_schema":{"type":"object"}`) {
+		t.Fatalf("tool schema JSON did not preserve model shape: %s", got)
+	}
+
+	var legacy ToolSchemaView
+	if err := json.Unmarshal([]byte(`{"name":"Read","description":"x","parameters":{"type":"object"}}`), &legacy); err != nil {
+		t.Fatalf("legacy unmarshal: %v", err)
+	}
+	if string(legacy.Parameters) != `{"type":"object"}` {
+		t.Fatalf("legacy Parameters = %s", string(legacy.Parameters))
+	}
+}
+
+func containsAll(s string, needles ...string) bool {
+	for _, n := range needles {
+		if !strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
 }

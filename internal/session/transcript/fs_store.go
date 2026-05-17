@@ -20,10 +20,22 @@ type FileStore struct {
 	baseDir   string
 	projectID string
 
-	// persistedIDs caches the set of message IDs already written per transcript.
-	// Lazily populated on first access; replaces O(N) file scans on every append
-	// with O(1) lookups after the initial scan.
-	persistedIDs map[string]map[string]struct{}
+	// sessions holds per-transcript caches keyed by session ID. Populated
+	// lazily on first access via warmupCachesLocked, which does one forward
+	// scan and fills every field together so resumed sessions pay one O(N)
+	// scan per process. Delete clears the entry to evict all derived state
+	// at once.
+	sessions map[string]*sessionCache
+}
+
+// sessionCache holds the derived state we keep in memory to avoid re-scanning
+// the transcript on every write. All fields are mu-guarded.
+type sessionCache struct {
+	warmed        bool                // forward scan completed
+	persistedIDs  map[string]struct{} // dedup for AppendMessage
+	lastGitBranch string              // sparse-emit base
+	leafMessageID string              // parent pointer for next message
+	latestState   State               // projected state (cold-Save diff base)
 }
 
 type fileIndex struct {
@@ -74,16 +86,27 @@ func (s *FileStore) Start(ctx context.Context, cmd StartCommand) error {
 		Time:      cmd.Time,
 		Type:      SessionStarted,
 		Cwd:       cmd.Cwd,
+		Version:   SchemaVersion,
 		Session: &SessionRecord{
-			Provider: cmd.Provider,
-			Model:    cmd.Model,
-			ParentID: cmd.ParentID,
+			Provider:  cmd.Provider,
+			Model:     cmd.Model,
+			MaxTokens: cmd.MaxTokens,
+			AgentID:   cmd.AgentID,
+			ParentID:  cmd.ParentID,
 		},
 	}
 	if err := s.appendRecord(path, rec, true); err != nil {
 		return err
 	}
-	return s.refreshIndexLocked(cmd.SessionID)
+	return s.upsertIndexEntryLocked(cmd.SessionID, func(e *fileIndexEntry, fresh bool) {
+		e.FullPath = path
+		if fresh {
+			e.CreatedAt = cmd.Time
+		}
+		if e.UpdatedAt.Before(cmd.Time) {
+			e.UpdatedAt = cmd.Time
+		}
+	})
 }
 
 func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand) error {
@@ -103,14 +126,25 @@ func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand)
 		return nil
 	}
 
+	branch, err := s.lastBranchLocked(cmd.SessionID)
+	if err != nil {
+		return err
+	}
+	// gitBranch is sparse: only stamp when it changes from the last persisted
+	// value. lastGitBranch(messages) on the read side scans for the most recent
+	// non-empty entry, so unchanged branches stay correctly reported.
+	emitBranch := ""
+	if cmd.GitBranch != "" && cmd.GitBranch != branch {
+		emitBranch = cmd.GitBranch
+	}
+
 	rec := Record{
 		ID:          cmd.SessionID + ":" + cmd.MessageID,
 		SessionID:   cmd.SessionID,
 		Time:        cmd.Time,
 		Type:        MessageAppended,
 		ParentID:    cmd.ParentID,
-		Cwd:         cmd.Cwd,
-		GitBranch:   cmd.GitBranch,
+		GitBranch:   emitBranch,
 		AgentID:     cmd.AgentID,
 		IsSidechain: cmd.IsSidechain,
 		Message: &MessageRecord{
@@ -123,7 +157,35 @@ func (s *FileStore) AppendMessage(ctx context.Context, cmd AppendMessageCommand)
 		return err
 	}
 	seen[cmd.MessageID] = struct{}{}
-	return s.refreshIndexLocked(cmd.SessionID)
+	if emitBranch != "" {
+		s.setLastBranchLocked(cmd.SessionID, emitBranch)
+	}
+	userText := ""
+	if cmd.Role == "user" {
+		userText = firstTextBlock(cmd.Content)
+	}
+	return s.upsertIndexEntryLocked(cmd.SessionID, func(e *fileIndexEntry, fresh bool) {
+		e.FullPath = path
+		if fresh || e.CreatedAt.IsZero() {
+			e.CreatedAt = cmd.Time
+		}
+		if e.UpdatedAt.Before(cmd.Time) {
+			e.UpdatedAt = cmd.Time
+		}
+		e.MessageCount++
+		if userText != "" {
+			if e.Title == "" {
+				e.Title = userText
+			}
+			e.LastPrompt = userText
+		}
+		if emitBranch != "" {
+			e.GitBranch = emitBranch
+		}
+		if cmd.IsSidechain {
+			e.IsSidechain = true
+		}
+	})
 }
 
 func (s *FileStore) PatchState(ctx context.Context, cmd PatchStateCommand) error {
@@ -134,11 +196,15 @@ func (s *FileStore) PatchState(ctx context.Context, cmd PatchStateCommand) error
 		return err
 	}
 
+	if len(cmd.Ops) == 0 {
+		// Nothing changed; do not emit an empty patch record.
+		return nil
+	}
 	rec := Record{
 		ID:        fmt.Sprintf("%s:state:%d", cmd.SessionID, cmd.Time.UnixNano()),
 		SessionID: cmd.SessionID,
 		Time:      cmd.Time,
-		Type:      StatePatched,
+		Type:      SessionStatePatched,
 		State: &StateRecord{
 			Ops: append([]PatchOp(nil), cmd.Ops...),
 		},
@@ -146,28 +212,54 @@ func (s *FileStore) PatchState(ctx context.Context, cmd PatchStateCommand) error
 	if err := s.appendRecord(s.transcriptPath(cmd.SessionID), rec, false); err != nil {
 		return err
 	}
-	return s.refreshIndexLocked(cmd.SessionID)
+	// Keep the in-memory state cache live so LoadState reflects writes from
+	// this process without re-reading the file. Warmup is required so we
+	// don't lose the prior projected state when applying the new ops.
+	if err := s.warmupCachesLocked(cmd.SessionID); err != nil {
+		return err
+	}
+	c := s.sessions[cmd.SessionID]
+	_ = applyStatePatch(&c.latestState, rec.State)
+	return s.upsertIndexEntryLocked(cmd.SessionID, func(e *fileIndexEntry, fresh bool) {
+		if fresh {
+			e.FullPath = s.transcriptPath(cmd.SessionID)
+			e.CreatedAt = cmd.Time
+		}
+		if e.UpdatedAt.Before(cmd.Time) {
+			e.UpdatedAt = cmd.Time
+		}
+		// Only mirror fields the patch actually touched — otherwise we'd
+		// clobber the AppendMessage-derived firstUserText title fallback
+		// whenever an unrelated state op (Tag, Mode, Tasks) flows through.
+		for _, op := range cmd.Ops {
+			switch op.Path {
+			case PatchPathTitle:
+				e.Title = c.latestState.Title
+			case PatchPathLastPrompt:
+				e.LastPrompt = c.latestState.LastPrompt
+			}
+		}
+	})
 }
 
-func (s *FileStore) AppendTools(ctx context.Context, cmd AppendToolsCommand) error {
+func (s *FileStore) AppendTool(ctx context.Context, cmd AppendToolCommand) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if cmd.Type != ToolsAdded && cmd.Type != ToolsRemoved {
+	if cmd.Type != ToolAdded && cmd.Type != ToolRemoved {
 		return fmt.Errorf("append tools: unexpected type %q", cmd.Type)
 	}
 
 	rec := cmd.Record
 	full := Record{
-		ID:        fmt.Sprintf("%s:tools:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		ID:        fmt.Sprintf("%s:tool:%d", cmd.SessionID, cmd.Time.UnixNano()),
 		SessionID: cmd.SessionID,
 		Time:      cmd.Time,
 		Type:      cmd.Type,
-		AgentID:   cmd.AgentID,
-		Tools:     &rec,
+		Tool:      &rec,
 	}
 	return s.appendRecord(s.transcriptPath(cmd.SessionID), full, false)
 }
@@ -189,8 +281,70 @@ func (s *FileStore) AppendSystemSection(ctx context.Context, cmd AppendSystemSec
 		SessionID: cmd.SessionID,
 		Time:      cmd.Time,
 		Type:      cmd.Type,
-		AgentID:   cmd.AgentID,
 		System:    &rec,
+	}
+	return s.appendRecord(s.transcriptPath(cmd.SessionID), full, false)
+}
+
+// AppendHook records one hook.fired event. Non-fsync — audit telemetry that
+// rolls up to disk at the next sync boundary (inference.responded or message).
+func (s *FileStore) AppendHook(ctx context.Context, cmd AppendHookCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rec := cmd.Record
+	full := Record{
+		ID:        fmt.Sprintf("%s:hook:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		SessionID: cmd.SessionID,
+		Time:      cmd.Time,
+		Type:      HookFired,
+		Hook:      &rec,
+	}
+	return s.appendRecord(s.transcriptPath(cmd.SessionID), full, false)
+}
+
+// AppendPermission records one permission.required or permission.decided
+// event. Non-fsync for the same reason as AppendHook.
+func (s *FileStore) AppendPermission(ctx context.Context, cmd AppendPermissionCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if cmd.Type != PermissionRequired && cmd.Type != PermissionDecided {
+		return fmt.Errorf("append permission: unexpected type %q", cmd.Type)
+	}
+	rec := cmd.Record
+	full := Record{
+		ID:         fmt.Sprintf("%s:perm:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		SessionID:  cmd.SessionID,
+		Time:       cmd.Time,
+		Type:       cmd.Type,
+		Permission: &rec,
+	}
+	return s.appendRecord(s.transcriptPath(cmd.SessionID), full, false)
+}
+
+// AppendSkillState records one skill.state.changed event. Non-fsync — audit
+// telemetry that rolls up at the next sync boundary.
+func (s *FileStore) AppendSkillState(ctx context.Context, cmd AppendSkillStateCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rec := cmd.Record
+	full := Record{
+		ID:        fmt.Sprintf("%s:skill:%d", cmd.SessionID, cmd.Time.UnixNano()),
+		SessionID: cmd.SessionID,
+		Time:      cmd.Time,
+		Type:      SkillStateChanged,
+		Skill:     &rec,
 	}
 	return s.appendRecord(s.transcriptPath(cmd.SessionID), full, false)
 }
@@ -212,7 +366,6 @@ func (s *FileStore) AppendInference(ctx context.Context, cmd AppendInferenceComm
 		SessionID: cmd.SessionID,
 		Time:      cmd.Time,
 		Type:      cmd.Type,
-		AgentID:   cmd.AgentID,
 		Inference: &rec,
 	}
 	// inference.responded sync-flushes the file so any preceding telemetry
@@ -269,6 +422,10 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 	enc.SetEscapeHTML(false)
 	for _, rec := range records {
 		rec.SessionID = cmd.NewSessionID
+		rec.ID = rewriteRecordSessionID(rec.ID, cmd.SourceSessionID, cmd.NewSessionID)
+		if rec.Version == "" {
+			rec.Version = SchemaVersion
+		}
 		rec.Time = cmd.Time
 		if err := enc.Encode(rec); err != nil {
 			_ = f.Close()
@@ -281,6 +438,7 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 		SessionID: cmd.NewSessionID,
 		Time:      cmd.Time,
 		Type:      SessionForked,
+		Version:   SchemaVersion,
 		Session: &SessionRecord{
 			ParentID: cmd.SourceSessionID,
 		},
@@ -299,6 +457,14 @@ func (s *FileStore) Fork(ctx context.Context, cmd ForkCommand) error {
 		return fmt.Errorf("rename fork transcript: %w", err)
 	}
 	return s.refreshIndexLocked(cmd.NewSessionID)
+}
+
+func rewriteRecordSessionID(id, oldSessionID, newSessionID string) string {
+	prefix := oldSessionID + ":"
+	if strings.HasPrefix(id, prefix) {
+		return newSessionID + ":" + strings.TrimPrefix(id, prefix)
+	}
+	return id
 }
 
 func (s *FileStore) Load(ctx context.Context, transcriptID string) (*Transcript, error) {
@@ -398,7 +564,7 @@ func (s *FileStore) Delete(ctx context.Context, transcriptID string) error {
 	if err := os.Remove(s.transcriptPath(transcriptID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete transcript file: %w", err)
 	}
-	delete(s.persistedIDs, transcriptID)
+	delete(s.sessions, transcriptID)
 
 	index, err := s.loadIndexLocked()
 	if err == nil {
@@ -441,9 +607,7 @@ func (s *FileStore) indexPath() string {
 // Single-process per file: the append+close pair preserves order regardless
 // of fsync; durability is the only thing the flag toggles.
 func (s *FileStore) appendRecord(path string, rec Record, sync bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create transcript dir: %w", err)
-	}
+	// NewFileStore creates transcripts/ at construction; no per-record MkdirAll.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open transcript file: %w", err)
@@ -467,35 +631,39 @@ func (s *FileStore) appendRecord(path string, rec Record, sync bool) error {
 	return nil
 }
 
-// persistedIDsLocked returns the cached set of message IDs already written to
-// the given transcript, scanning the file on first access. The returned map is
-// owned by the store; callers update it after a successful append.
-func (s *FileStore) persistedIDsLocked(transcriptID string) (map[string]struct{}, error) {
-	if seen, ok := s.persistedIDs[transcriptID]; ok {
-		return seen, nil
+// cacheLocked returns the per-session cache, creating an empty (unwarmed)
+// entry on first access. Callers must hold s.mu (write).
+func (s *FileStore) cacheLocked(transcriptID string) *sessionCache {
+	if s.sessions == nil {
+		s.sessions = make(map[string]*sessionCache)
 	}
-	seen, err := scanMessageIDs(s.transcriptPath(transcriptID))
-	if err != nil {
-		return nil, err
+	c, ok := s.sessions[transcriptID]
+	if !ok {
+		c = &sessionCache{persistedIDs: make(map[string]struct{})}
+		s.sessions[transcriptID] = c
 	}
-	if s.persistedIDs == nil {
-		s.persistedIDs = make(map[string]map[string]struct{})
-	}
-	s.persistedIDs[transcriptID] = seen
-	return seen, nil
+	return c
 }
 
-func scanMessageIDs(path string) (map[string]struct{}, error) {
-	seen := make(map[string]struct{})
-	f, err := os.Open(path)
+// warmupCachesLocked performs a single forward scan of the transcript and
+// populates persistedIDs, lastGitBranch, leafMessageID, and latestState. On
+// resumed sessions this replaces four independent O(N) scans (one for each
+// cache) with one. Idempotent.
+func (s *FileStore) warmupCachesLocked(transcriptID string) error {
+	c := s.cacheLocked(transcriptID)
+	if c.warmed {
+		return nil
+	}
+	f, err := os.Open(s.transcriptPath(transcriptID))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return seen, nil
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("open transcript file: %w", err)
 		}
-		return nil, fmt.Errorf("open transcript file: %w", err)
+		// Missing file → empty caches; still mark warmed so we don't retry.
+		c.warmed = true
+		return nil
 	}
 	defer f.Close()
-
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -503,14 +671,91 @@ func scanMessageIDs(path string) (map[string]struct{}, error) {
 		if json.Unmarshal(scanner.Bytes(), &rec) != nil {
 			continue
 		}
+		if rec.GitBranch != "" {
+			c.lastGitBranch = rec.GitBranch
+		}
 		if rec.Type == MessageAppended && rec.Message != nil {
-			seen[rec.Message.MessageID] = struct{}{}
+			c.persistedIDs[rec.Message.MessageID] = struct{}{}
+			c.leafMessageID = rec.Message.MessageID
+		}
+		if rec.Type == SessionStatePatched && rec.State != nil {
+			_ = applyStatePatch(&c.latestState, rec.State)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan transcript file: %w", err)
+		return fmt.Errorf("scan transcript file: %w", err)
 	}
-	return seen, nil
+	c.warmed = true
+	return nil
+}
+
+// persistedIDsLocked returns the cached set of message IDs already written to
+// the given transcript. The returned map is owned by the store; callers update
+// it after a successful append.
+func (s *FileStore) persistedIDsLocked(transcriptID string) (map[string]struct{}, error) {
+	if err := s.warmupCachesLocked(transcriptID); err != nil {
+		return nil, err
+	}
+	return s.sessions[transcriptID].persistedIDs, nil
+}
+
+// lastBranchLocked returns the most recently emitted git branch for the
+// transcript. Used to keep gitBranch emission sparse.
+func (s *FileStore) lastBranchLocked(transcriptID string) (string, error) {
+	if err := s.warmupCachesLocked(transcriptID); err != nil {
+		return "", err
+	}
+	return s.sessions[transcriptID].lastGitBranch, nil
+}
+
+func (s *FileStore) setLastBranchLocked(transcriptID, branch string) {
+	s.cacheLocked(transcriptID).lastGitBranch = branch
+}
+
+// LastMessageID returns the active-chain leaf message ID for an existing
+// transcript, or "" if the transcript doesn't exist or has no messages. Fast
+// path uses a read lock when the cache is warm; cold path upgrades to a
+// write lock to run warmupCachesLocked. One O(N) scan per session per
+// process, then O(1).
+func (s *FileStore) LastMessageID(ctx context.Context, transcriptID string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	if c, ok := s.sessions[transcriptID]; ok && c.warmed {
+		leaf := c.leafMessageID
+		s.mu.RUnlock()
+		return leaf, nil
+	}
+	s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.warmupCachesLocked(transcriptID); err != nil {
+		return "", err
+	}
+	return s.sessions[transcriptID].leafMessageID, nil
+}
+
+// LoadState returns the projected session State (Title, LastPrompt, Tag,
+// Mode, Tasks, Worktree) without materializing the active message chain.
+// Used by Save's first-write cold path to seed the diff base.
+func (s *FileStore) LoadState(ctx context.Context, transcriptID string) (State, error) {
+	if err := ctx.Err(); err != nil {
+		return State{}, err
+	}
+	s.mu.RLock()
+	if c, ok := s.sessions[transcriptID]; ok && c.warmed {
+		state := c.latestState
+		s.mu.RUnlock()
+		return state, nil
+	}
+	s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.warmupCachesLocked(transcriptID); err != nil {
+		return State{}, err
+	}
+	return s.sessions[transcriptID].latestState, nil
 }
 
 func (s *FileStore) loadRecordsLocked(path string) ([]Record, error) {
@@ -604,6 +849,30 @@ func (s *FileStore) rebuildIndexLocked() error {
 			IsSidechain:  item.IsSidechain,
 		})
 	}
+	return s.saveIndexLocked(index)
+}
+
+// upsertIndexEntryLocked applies an incremental mutation to the index entry
+// for the given session. The fresh flag tells the mutator whether it's
+// initializing a brand new entry — used for CreatedAt seeding. This replaces
+// the legacy full-rebuild path (loadRecordsLocked + Project) for hot writes,
+// which made every append O(transcript size). The Compact/Fork paths still
+// use refreshIndexLocked because they can change the projected active chain
+// length, which incremental updates can't track.
+func (s *FileStore) upsertIndexEntryLocked(transcriptID string, mutate func(e *fileIndexEntry, fresh bool)) error {
+	index, err := s.loadIndexLocked()
+	if err != nil {
+		index = &fileIndex{Version: 1, ProjectID: s.projectID}
+	}
+	for i := range index.Entries {
+		if index.Entries[i].SessionID == transcriptID {
+			mutate(&index.Entries[i], false)
+			return s.saveIndexLocked(index)
+		}
+	}
+	entry := fileIndexEntry{SessionID: transcriptID}
+	mutate(&entry, true)
+	index.Entries = append(index.Entries, entry)
 	return s.saveIndexLocked(index)
 }
 

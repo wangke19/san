@@ -14,46 +14,51 @@ type PermissionRequest struct {
 	AgentMeta      *AgentMetadata // Agent metadata (for Agent tool)
 }
 
-// DiffMetadata contains diff information for file modifications
+// DiffMetadata contains diff information for file modifications.
+// json tags elide bulky fields (full file contents, unified diff text,
+// parsed line array) so the struct is safe to serialize into audit
+// records that summarize a diff by counts rather than payload.
 type DiffMetadata struct {
-	OldContent   string     // Original file content
-	NewContent   string     // New file content after modification
-	UnifiedDiff  string     // Unified diff format
-	Lines        []DiffLine // Parsed diff lines
-	IsNewFile    bool       // Whether this is a new file creation
-	PreviewMode  bool       // True to show content preview instead of diff (for Write tool)
-	AddedCount   int        // Number of lines added
-	RemovedCount int        // Number of lines removed
+	OldContent   string     `json:"-"` // Original file content (bulky; not for audit)
+	NewContent   string     `json:"-"` // New file content after modification (bulky)
+	UnifiedDiff  string     `json:"-"` // Unified diff format (bulky)
+	Lines        []DiffLine `json:"-"` // Parsed diff lines (bulky)
+	IsNewFile    bool       `json:"isNewFile,omitempty"`
+	PreviewMode  bool       `json:"previewMode,omitempty"`
+	AddedCount   int        `json:"addedCount,omitempty"`
+	RemovedCount int        `json:"removedCount,omitempty"`
 }
 
-// BashMetadata contains metadata for Bash command permission requests
+// BashMetadata contains metadata for Bash command permission requests.
 type BashMetadata struct {
-	Command       string // The command to execute
-	Description   string // Optional description of what the command does
-	RunBackground bool   // Whether to run in background
-	LineCount     int    // Number of lines in the command
+	Command       string `json:"command"`
+	Description   string `json:"description,omitempty"`
+	RunBackground bool   `json:"runBackground,omitempty"`
+	LineCount     int    `json:"lineCount,omitempty"`
 }
 
-// SkillMetadata contains metadata for Skill permission requests
+// SkillMetadata contains metadata for Skill permission requests.
 type SkillMetadata struct {
-	SkillName   string   // Full skill name (namespace:name)
-	Description string   // Skill description
-	Args        string   // Optional arguments passed to the skill
-	ScriptCount int      // Number of available scripts
-	RefCount    int      // Number of reference files
-	Scripts     []string // Script file names
-	References  []string // Reference file names
+	SkillName   string   `json:"skillName"`
+	Description string   `json:"description,omitempty"`
+	Args        string   `json:"args,omitempty"`
+	ScriptCount int      `json:"scriptCount,omitempty"`
+	RefCount    int      `json:"refCount,omitempty"`
+	Scripts     []string `json:"scripts,omitempty"`
+	References  []string `json:"references,omitempty"`
 }
 
-// AgentMetadata contains metadata for Task permission requests
+// AgentMetadata contains metadata for Task permission requests.
+// Prompt is elided — the same content lives in the surrounding tool_use
+// block already, and prompts can be large.
 type AgentMetadata struct {
-	AgentName      string   // Name of the agent type (Explore, Plan, etc.)
-	Description    string   // Agent description
-	Model          string   // Model to be used by the agent
-	PermissionMode string   // Permission mode (plan, default, dontAsk, etc.)
-	Tools          []string // List of tools available to the agent
-	Prompt         string   // The task prompt
-	Background     bool     // Whether running in background
+	AgentName      string   `json:"agentName"`
+	Description    string   `json:"description,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	PermissionMode string   `json:"permissionMode,omitempty"`
+	Tools          []string `json:"tools,omitempty"`
+	Prompt         string   `json:"-"` // bulky; available in the tool_use block
+	Background     bool     `json:"background,omitempty"`
 }
 
 // DiffLine represents a single line in a diff

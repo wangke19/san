@@ -24,6 +24,24 @@ type Registry struct {
 	userStore    *Store // User-level store (~/.gen/skills.json)
 	projectStore *Store // Project-level store (.gen/skills.json)
 	cwd          string // Current working directory for project store
+
+	// onStateChange fires every time a skill transitions between states.
+	// Used by the session recorder to emit skill.state.changed records.
+	// Called with the read lock NOT held — recorder may do I/O.
+	onStateChange func(name, previous, current, caller string)
+}
+
+// StateChangeObserver is the callback shape SetStateChangeObserver registers.
+// Fires once per accepted SetState call.
+type StateChangeObserver func(name, previous, current, caller string)
+
+// SetStateChangeObserver registers a callback for state transitions. nil
+// clears it. Replaces any prior observer; the registry supports a single
+// recorder consumer at a time, which is enough today (one main session).
+func (r *Registry) SetStateChangeObserver(cb StateChangeObserver) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onStateChange = cb
 }
 
 // Store handles persistence of skill states to a skills.json file.
@@ -221,20 +239,35 @@ func (r *Registry) GetActive() []*Skill {
 // If userLevel is true, saves to ~/.gen/skills.json, otherwise to .gen/skills.json.
 func (r *Registry) SetState(name string, state SkillState, userLevel bool) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	skill, ok := r.skills[name]
 	if !ok {
+		r.mu.Unlock()
 		return fmt.Errorf("skill not found: %s", name)
 	}
-
+	previous := skill.State
 	skill.State = state
+	observer := r.onStateChange
+	fullName := skill.FullName()
+	r.mu.Unlock()
 
 	// Persist to the appropriate store
+	var err error
 	if userLevel {
-		return r.userStore.SetState(skill.FullName(), state)
+		err = r.userStore.SetState(fullName, state)
+	} else {
+		err = r.projectStore.SetState(fullName, state)
 	}
-	return r.projectStore.SetState(skill.FullName(), state)
+
+	// Fire observer after the write so the recorder sees the durable state
+	// transition, not a no-op or rollback-on-error.
+	if err == nil && observer != nil && previous != state {
+		level := "project"
+		if userLevel {
+			level = "user"
+		}
+		observer(fullName, string(previous), string(state), "user:/skills:"+level)
+	}
+	return err
 }
 
 // GetStatesAt returns a copy of skill states from the specified level.

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -14,6 +15,13 @@ type Setup struct {
 
 	Store     *Store
 	SessionID string
+
+	// recorder caches the main-session Recorder so the app layer can emit
+	// audit events (permission decisions, skill state changes, etc.) from
+	// code paths that don't have a direct handle to the agent build site.
+	// First NewRecorder call wins; subsequent calls return the cached value
+	// if it still matches the session.
+	recorder *Recorder
 }
 
 // EnsureStore lazily initializes the session store for the given cwd.
@@ -139,15 +147,37 @@ func (s *Setup) Fork(id string) (*Snapshot, error) {
 // Returns nil if the store is not initialized — callers can pass the nil
 // result through to core.Config.OnEvent safely because Recorder.OnAgentEvent
 // is nil-safe.
+//
+// Caches the result so subsequent callers (e.g. permission decision sites
+// far from the agent build) can pull the same recorder via Recorder().
 func (s *Setup) NewRecorder(agentID, provider, model string, maxTokens int) *Recorder {
+	// Fast path: cache hit under read lock.
 	s.mu.RLock()
+	if s.recorder != nil && s.recorder.sessionID == s.SessionID && s.Store != nil {
+		cached := s.recorder
+		s.mu.RUnlock()
+		return cached
+	}
 	st := s.Store
 	sessionID := s.SessionID
 	s.mu.RUnlock()
+
 	if st == nil || st.transcriptStore == nil || sessionID == "" {
 		return nil
 	}
-	return NewRecorder(RecorderOptions{
+
+	// Resolve the leaf BEFORE taking the write lock — the Load can be MB-scale
+	// for resumed sessions and we don't want to block other Setup operations
+	// on disk I/O. Stat-gate so fresh sessions skip Load entirely.
+	leaf := loadLeafIfExists(st, sessionID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-check after re-acquiring: another caller may have raced ahead.
+	if s.recorder != nil && s.recorder.sessionID == sessionID {
+		return s.recorder
+	}
+	r := NewRecorder(RecorderOptions{
 		FileStore: st.transcriptStore,
 		SessionID: sessionID,
 		AgentID:   agentID,
@@ -157,4 +187,33 @@ func (s *Setup) NewRecorder(agentID, provider, model string, maxTokens int) *Rec
 		Cwd:       st.cwd,
 		ProjectID: st.projectID,
 	})
+	if leaf != "" {
+		r.seedLastMessageID(leaf)
+	}
+	s.recorder = r
+	return r
+}
+
+// loadLeafIfExists returns the active-chain leaf message ID of an existing
+// transcript so the recorder's parent pointer can chain new messages off the
+// loaded history. Errors are swallowed — bad transcript just means no seed.
+func loadLeafIfExists(st *Store, sessionID string) string {
+	if st == nil || st.transcriptStore == nil || sessionID == "" {
+		return ""
+	}
+	leaf, _ := st.transcriptStore.LastMessageID(context.Background(), sessionID)
+	return leaf
+}
+
+// Recorder returns the cached main-session Recorder, or nil if NewRecorder
+// has not been called for the current session. Audit emit sites outside the
+// agent build path use this to surface events without holding their own
+// reference.
+func (s *Setup) Recorder() *Recorder {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.recorder == nil || s.recorder.sessionID != s.SessionID {
+		return nil
+	}
+	return s.recorder
 }

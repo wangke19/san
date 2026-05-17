@@ -16,6 +16,8 @@ type StartCommand struct {
 	Cwd       string
 	Provider  string
 	Model     string
+	MaxTokens int
+	AgentID   string
 	ParentID  string
 	Time      time.Time
 }
@@ -25,7 +27,6 @@ type AppendMessageCommand struct {
 	MessageID   string
 	ParentID    string
 	Time        time.Time
-	Cwd         string
 	GitBranch   string
 	AgentID     string
 	IsSidechain bool
@@ -53,9 +54,10 @@ type ForkCommand struct {
 
 // AppendInferenceCommand writes either an inference.requested or
 // inference.responded record. Type selects which; Record carries the payload.
+// AgentID is not on the command: the recorder is single-agent and the agent
+// ID lives on session.started.
 type AppendInferenceCommand struct {
 	SessionID string
-	AgentID   string
 	Time      time.Time
 	Type      string // InferenceRequested or InferenceResponded
 	Record    InferenceRecord
@@ -65,19 +67,43 @@ type AppendInferenceCommand struct {
 // system.section.removed. Removed sections drop Content from Record.
 type AppendSystemSectionCommand struct {
 	SessionID string
-	AgentID   string
 	Time      time.Time
 	Type      string // SystemSectionAdded or SystemSectionRemoved
 	Record    SystemSectionRecord
 }
 
-// AppendToolsCommand writes tools.added or tools.removed.
-type AppendToolsCommand struct {
+// AppendToolCommand writes tool.added or tool.removed.
+type AppendToolCommand struct {
 	SessionID string
-	AgentID   string
 	Time      time.Time
-	Type      string // ToolsAdded or ToolsRemoved
-	Record    ToolsRecord
+	Type      string // ToolAdded or ToolRemoved
+	Record    ToolRecord
+}
+
+// AppendHookCommand writes one hook.fired record. One record per completed
+// hook invocation; async hooks emit when they finish, not when they kick off.
+type AppendHookCommand struct {
+	SessionID string
+	Time      time.Time
+	Record    HookRecord
+}
+
+// AppendSkillStateCommand writes one skill.state.changed record.
+type AppendSkillStateCommand struct {
+	SessionID string
+	Time      time.Time
+	Record    SkillRecord
+}
+
+// AppendPermissionCommand writes permission.required or permission.decided.
+// Type selects which; Record carries the (shared) payload. Required is
+// emitted once when an external resolver must adjudicate; decided is emitted
+// once when the final allow/reject lands.
+type AppendPermissionCommand struct {
+	SessionID string
+	Time      time.Time
+	Type      string // PermissionRequired or PermissionDecided
+	Record    PermissionRecord
 }
 
 type ListOptions struct {
@@ -94,26 +120,47 @@ func PatchTasks(tasks []tracker.Task) PatchOp {
 }
 func PatchWorktree(worktree *WorktreeState) PatchOp { return mustPatch(PatchPathWorktree, worktree) }
 
-// StateOpsFor builds the full set of patch ops for a projected state.
-// Used by the session save path to express the current snapshot as a single
-// patch record.
-//
-// All fields are emitted unconditionally. Under the append-only persistence
-// path the projector applies last-wins across patch records, so a missing op
-// would let prior values survive rather than clear them. Always emitting
-// ensures that clearing a value (empty tasks, exited worktree) reflects on
-// the next save. PatchTasks with an empty slice serializes to "[]" and
-// PatchWorktree(nil) to "null" — both already round-trip correctly through
-// the projector.
-func StateOpsFor(state State) []PatchOp {
-	return []PatchOp{
-		PatchTitle(state.Title),
-		PatchLastPrompt(state.LastPrompt),
-		PatchTag(state.Tag),
-		PatchMode(state.Mode),
-		PatchTasks(TrackerTasksFromView(state.Tasks)),
-		PatchWorktree(state.Worktree),
+// StateOpsDiff returns the patch ops for fields that changed between prev
+// and next. Omitted ops keep the prior value (append-only last-wins);
+// empty/nil values are valid and explicitly clear the field. First emit
+// (prev == zero State) writes every non-default field.
+func StateOpsDiff(prev, next State) []PatchOp {
+	ops := make([]PatchOp, 0, 6)
+	if prev.Title != next.Title {
+		ops = append(ops, PatchTitle(next.Title))
 	}
+	if prev.LastPrompt != next.LastPrompt {
+		ops = append(ops, PatchLastPrompt(next.LastPrompt))
+	}
+	if prev.Tag != next.Tag {
+		ops = append(ops, PatchTag(next.Tag))
+	}
+	if prev.Mode != next.Mode {
+		ops = append(ops, PatchMode(next.Mode))
+	}
+	if !tasksEqual(prev.Tasks, next.Tasks) {
+		ops = append(ops, PatchTasks(TrackerTasksFromView(next.Tasks)))
+	}
+	if !worktreeEqual(prev.Worktree, next.Worktree) {
+		ops = append(ops, PatchWorktree(next.Worktree))
+	}
+	return ops
+}
+
+func tasksEqual(a, b []TrackerTaskView) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return string(ja) == string(jb)
+}
+
+func worktreeEqual(a, b *WorktreeState) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func mustPatch(path string, v any) PatchOp {

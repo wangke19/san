@@ -17,6 +17,23 @@ import (
 // the implementation owns provider construction and streaming details.
 type LLMCompleter func(ctx context.Context, systemPrompt, userMessage, model string) (string, error)
 
+// HookFiredAudit is the payload delivered to AuditCallback after every hook
+// invocation. The session recorder uses this to write one hook.fired
+// transcript record per invocation.
+type HookFiredAudit struct {
+	Event    string // hook EventType as a string
+	Source   string // script path / function ID identifying which hook ran
+	Matcher  string // configured matcher
+	Outcome  string // "ran" | "blocked" | "error" | "async"
+	Reason   string // hook-supplied block reason or error message
+	Duration time.Duration
+}
+
+// AuditCallback is invoked once per completed hook execution (sync or async).
+// It MUST NOT block — the engine calls it inline and audit failures shouldn't
+// stall the hook pipeline.
+type AuditCallback func(HookFiredAudit)
+
 // defaultTimeout is the default timeout for hook commands in seconds.
 const defaultTimeout = 600
 
@@ -33,6 +50,7 @@ type Engine struct {
 	hookModel      string
 	httpClient     *http.Client
 	asyncCallback  AsyncHookCallback
+	auditCallback  AuditCallback
 	envProvider    func() []string
 
 	mu         sync.RWMutex
@@ -52,6 +70,22 @@ func NewEngine(settings *setting.Settings, sessionID, cwd, transcriptPath string
 		httpClient:     http.DefaultClient,
 		store:          newHookStore(),
 		status:         newStatusTracker(),
+	}
+}
+
+// SetAuditCallback wires the per-execution audit hook. nil clears it.
+func (e *Engine) SetAuditCallback(cb AuditCallback) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auditCallback = cb
+}
+
+func (e *Engine) audit(a HookFiredAudit) {
+	e.mu.RLock()
+	cb := e.auditCallback
+	e.mu.RUnlock()
+	if cb != nil {
+		cb(a)
 	}
 }
 
@@ -148,17 +182,34 @@ func (e *Engine) Execute(ctx context.Context, event EventType, input HookInput) 
 				defer e.detachedWg.Done()
 				e.executeDetachedHook(context.Background(), hookCopy, inputCopy)
 			}()
+			// Emit at launch; the detached goroutine re-emits with the real
+			// outcome when it finishes. Two records make the lifecycle visible.
+			e.audit(HookFiredAudit{
+				Event:   string(event),
+				Source:  matchedHookIdentity(hook),
+				Matcher: hook.Matcher,
+				Outcome: outcomeAsync,
+			})
 			continue
 		}
 
 		hookStart := time.Now()
 		result := e.executeMatchedHook(ctx, hook, input)
+		duration := time.Since(hookStart)
 		log.Logger().Debug("hook executed",
 			zap.String("event", string(event)),
 			zap.String("source", matchedHookIdentity(hook)),
-			zap.Duration("duration", time.Since(hookStart)),
+			zap.Duration("duration", duration),
 			zap.Bool("error", result.Error != nil),
 		)
+		e.audit(HookFiredAudit{
+			Event:    string(event),
+			Source:   matchedHookIdentity(hook),
+			Matcher:  hook.Matcher,
+			Outcome:  outcomeOf(result),
+			Reason:   reasonOf(result),
+			Duration: duration,
+		})
 		if result.Error != nil {
 			log.Logger().Warn("hook execution failed",
 				zap.String("event", string(event)),
@@ -174,6 +225,38 @@ func (e *Engine) Execute(ctx context.Context, event EventType, input HookInput) 
 	}
 
 	return outcome
+}
+
+func outcomeOf(r HookOutcome) string {
+	switch {
+	case r.Error != nil:
+		return outcomeError
+	case !r.ShouldContinue:
+		return outcomeBlocked
+	default:
+		return outcomeRan
+	}
+}
+
+// Package-local mirrors of transcript.HookOutcome* so the hook package
+// doesn't import the transcript package. The two sides are joined by an
+// audit consumer (session.Recorder) that does the final mapping.
+const (
+	outcomeRan     = "ran"
+	outcomeBlocked = "blocked"
+	outcomeError   = "error"
+	outcomeAsync   = "async"
+)
+
+// reasonOf extracts the human-readable reason for blocked/error outcomes.
+func reasonOf(r HookOutcome) string {
+	if r.Error != nil {
+		return r.Error.Error()
+	}
+	if !r.ShouldContinue {
+		return r.BlockReason
+	}
+	return ""
 }
 
 // ExecuteAsync runs all matching hooks asynchronously (fire-and-forget).

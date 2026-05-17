@@ -4,7 +4,7 @@
 
 Sessions persist conversations to disk as transcript event logs under the project store. Each session keeps message events plus projected state (title, last prompt, provider/model, timestamps, tasks, compaction summary) so it can be resumed, forked, or listed without replaying the TUI runtime manually.
 
-Detailed persistence, recovery, and transcript-specific test coverage now live in `docs/transcriptstore.md`.
+Detailed persistence, recovery, and the transcript event model live in `docs/inspector.md`.
 
 | Concept | Detail |
 |---------|--------|
@@ -52,7 +52,7 @@ TestSessionFork_IsIndependent         — fork creates independent session with 
 
 ## Interactive Tests (tmux)
 
-For the full transcript persistence checklist, including `--continue`, `--resume`, `--fork`, compact restore, JSONL validation, and tool-result hydration, use `docs/transcriptstore.md`.
+For the full transcript persistence model, including the event log layout and the `--continue` / `--resume` / `--fork` recovery flow, see `docs/inspector.md`.
 
 ```bash
 tmux new-session -d -s t_sess -x 220 -y 60

@@ -186,6 +186,7 @@ const (
 	PreTool   EventType = "PreTool"    // before tool execution (ToolCall in Data)
 	PostTool  EventType = "PostTool"   // after tool execution (ToolResult in Data)
 	OnMessage EventType = "Message"    // message received on inbox (Message in Data)
+	OnAppend  EventType = "Append"     // message appended to conversation chain (Message in Data)
 	OnTurn    EventType = "Turn"       // think+act cycle completed (Result in Data)
 	OnCompact EventType = "Compact"    // conversation compacted (CompactInfo in Data)
 
@@ -276,6 +277,9 @@ func StopEvent(agentID string, err error) Event {
 }
 func ChunkEvent(agentID string, c Chunk) Event { return Event{Type: OnChunk, Source: agentID, Data: c} }
 func MessageEvent(msg Message) Event           { return Event{Type: OnMessage, Source: msg.From, Data: msg} }
+func AppendEvent(agentID string, msg Message) Event {
+	return Event{Type: OnAppend, Source: agentID, Data: msg}
+}
 func TurnEvent(agentID string, r Result) Event { return Event{Type: OnTurn, Source: agentID, Data: r} }
 func PreInferEvent(agentID string, ctx InferenceContext) Event {
 	return Event{Type: PreInfer, Source: agentID, Data: ctx}

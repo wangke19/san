@@ -137,6 +137,12 @@ func (s *Service) Enqueue(body string) {
 // → PostCompact → /skills toggle in close succession produces a single
 // emission per provider rather than accumulating duplicates. Ad-hoc entries
 // queued via Enqueue are preserved.
+//
+// Each provider's body is wrapped with the provider ID as the `source`
+// attribute on the system-reminder tag (e.g. `<system-reminder
+// source="skills-directory">…`) so trace/audit can attribute who injected
+// what without parsing the body itself. Models treat unknown attributes
+// transparently — the model-visible meaning is unchanged.
 func (s *Service) EnqueueAllProviders() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,7 +168,7 @@ func (s *Service) EnqueueAllProviders() {
 		if body == "" {
 			continue
 		}
-		s.pending = append(s.pending, pendingEntry{providerID: p.ID(), wrapped: Wrap(body)})
+		s.pending = append(s.pending, pendingEntry{providerID: p.ID(), wrapped: WrapWithSource(body, p.ID())})
 	}
 }
 
@@ -191,11 +197,25 @@ func (s *Service) Empty() bool {
 // Wrap returns body wrapped in <system-reminder>...</system-reminder>. Empty
 // body returns "".
 func Wrap(body string) string {
+	return WrapWithSource(body, "")
+}
+
+// WrapWithSource is like Wrap but stamps a source attribute on the opening
+// tag so downstream consumers (transcript parser, viewer) know which
+// provider produced the reminder. source="" matches Wrap output exactly to
+// keep ad-hoc Enqueue traffic and tests stable.
+func WrapWithSource(body, source string) string {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return ""
 	}
-	return "<system-reminder>\n" + body + "\n</system-reminder>"
+	if source == "" {
+		return "<system-reminder>\n" + body + "\n</system-reminder>"
+	}
+	// Escape any quotes in source defensively; provider IDs are constants
+	// today but the surface is public.
+	src := strings.ReplaceAll(source, `"`, `&quot;`)
+	return "<system-reminder source=\"" + src + "\">\n" + body + "\n</system-reminder>"
 }
 
 // WrapMemory returns the canonical <memory scope="..."> envelope used by

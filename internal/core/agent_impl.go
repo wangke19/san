@@ -539,10 +539,38 @@ func (a *agent) drainInbox(ctx context.Context) (int, error) {
 	}
 }
 
+// append adds msg to the conversation chain and emits OnAppend so observers
+// (notably the session recorder) can persist it in causal order — every
+// message.appended record must precede any inference.requested that consumes
+// it.
+//
+// Stamps an ID if msg.ID is empty so the OnAppend payload always carries a
+// stable identifier; downstream persistence dedupes on this ID.
 func (a *agent) append(msg Message) {
+	if msg.ID == "" {
+		msg.ID = NewMessageID()
+	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.messages = append(a.messages, msg)
+	a.mu.Unlock()
+	// emit outside the lock — onEvent handlers may do I/O (transcript writes).
+	a.emitAppend(msg)
+}
+
+// emitAppend pushes an OnAppend event without a ctx (callers of append() may
+// not have one) and without blocking the outbox. The recorder listens via
+// onEvent which is invoked synchronously.
+func (a *agent) emitAppend(msg Message) {
+	if a.onEvent != nil {
+		a.onEvent(AppendEvent(a.id, msg))
+	}
+	if a.outbox == nil || a.closed.Load() {
+		return
+	}
+	select {
+	case a.outbox <- AppendEvent(a.id, msg):
+	default:
+	}
 }
 
 func (a *agent) snapshot() []Message {
