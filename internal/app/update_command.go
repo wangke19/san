@@ -44,7 +44,7 @@ func (m *model) commandDeps() input.CommandDeps {
 		ForkSession:        m.forkSession,
 
 		CommitMessages:          m.CommitMessages,
-		StartProviderTurn:       m.StartProviderTurn,
+		SubmitToAgent:           m.SubmitToAgent,
 		HandleSkillInvocation:   m.HandleSkillInvocation,
 		StartExternalEditor:     m.StartExternalEditor,
 		ReloadPluginBackedState: m.ReloadPluginBackedState,

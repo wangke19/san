@@ -64,7 +64,7 @@ type CommandDeps struct {
 
 	// Existing callbacks
 	CommitMessages          func() []tea.Cmd
-	StartProviderTurn       func(content string) tea.Cmd
+	SubmitToAgent           func(content string) tea.Cmd
 	HandleSkillInvocation   func() tea.Cmd
 	StartExternalEditor     func(path string) tea.Cmd
 	ReloadPluginBackedState func() error
@@ -544,7 +544,7 @@ func (c *CommandController) handleLoopCommand(_ context.Context, args string) (s
 	}
 	c.deps.Conversation.AddNotice(fmt.Sprintf("Scheduled recurring task %s (%s, cron `%s`).%s Auto-expires after 7 days. Executing now.", job.ID, parsed.Human, parsed.Cron, parsed.Note))
 	c.deps.Conversation.Append(core.ChatMessage{Role: core.RoleUser, Content: parsed.Prompt})
-	return "", c.deps.StartProviderTurn(parsed.Prompt), nil
+	return "", c.deps.SubmitToAgent(parsed.Prompt), nil
 }
 
 func handleLoopAdminCommand(cronSvc *cron.Scheduler, args string) (string, bool, error) {

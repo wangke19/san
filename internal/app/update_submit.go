@@ -68,8 +68,8 @@ func (m *model) enqueueWhileStreaming(raw string) tea.Cmd {
 //	Step 3: record to input history before further branching
 //	Step 4: slash command? hand to the slash controller (manages its own
 //	        textarea + conv state)
-//	Step 5: provider turn — build user message (with image refs), append
-//	        to conv, reset textarea, kick off the agent turn
+//	Step 5: send to agent — build user message (with image refs), append
+//	        to conv, reset textarea, hand off to SubmitToAgent
 func (m *model) dispatchSubmission(raw string) tea.Cmd {
 	// Step 1: exit literal.
 	if input.IsExitRequest(raw) {
@@ -101,7 +101,7 @@ func (m *model) dispatchSubmission(raw string) tea.Cmd {
 	}
 	m.conv.Append(msg)
 	m.userInput.Reset()
-	return m.StartProviderTurn(msg.Content)
+	return m.SubmitToAgent(msg.Content)
 }
 
 // runSlashCommandIfMatched returns (cmd, true) if `raw` is a slash command
@@ -148,12 +148,12 @@ func (m *model) drainInputQueueAfterCancel() tea.Cmd {
 	return m.dispatchSubmission(item.Content)
 }
 
-// StartProviderTurn ensures the agent session is up and sends `content` to
+// SubmitToAgent ensures the agent session is up and sends `content` to
 // its inbox. The returned cmd runs the agent's outbox poller; agent events
 // flow back through Update → routeFeatureUpdate → conv.Update → model
 // conv.Runtime callbacks (see model_agent_events.go).
-func (m *model) StartProviderTurn(content string) tea.Cmd {
-	log.QueueLog("StartProviderTurn: %q", truncate(content, 60))
+func (m *model) SubmitToAgent(content string) tea.Cmd {
+	log.QueueLog("SubmitToAgent: %q", truncate(content, 60))
 	if m.env.LLMProvider == nil {
 		m.conv.Append(core.ChatMessage{
 			Role:    core.RoleNotice,
