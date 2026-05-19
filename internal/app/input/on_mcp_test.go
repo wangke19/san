@@ -12,12 +12,8 @@ import (
 
 func withTestRegistry(t *testing.T, reg *coremcp.Registry) {
 	t.Helper()
-	if reg != nil {
-		coremcp.SetDefault(coremcp.WrapRegistry(reg))
-	} else {
-		coremcp.ResetService()
-	}
-	t.Cleanup(coremcp.ResetService)
+	coremcp.SetDefaultRegistry(reg)
+	t.Cleanup(coremcp.ResetDefaultRegistry)
 }
 
 func TestHandleCommand_UninitializedRegistryMessage(t *testing.T) {

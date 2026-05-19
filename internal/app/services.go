@@ -34,7 +34,7 @@ type services struct {
 	Task     task.Service
 	Tracker  tracker.Service
 	Cron     cron.Service
-	MCP      mcp.Service
+	MCP      *mcp.Registry
 	Plugin   plugin.Service
 	Agent    agent.Service
 	Identity *identity.Registry
@@ -54,7 +54,7 @@ func newServices() services {
 		Task:     task.Default(),
 		Tracker:  tracker.Default(),
 		Cron:     cron.Default(),
-		MCP:      mcp.Default(),
+		MCP:      mcp.DefaultRegistry(),
 		Plugin:   plugin.Default(),
 		Agent:    agent.Default(),
 		Identity: identity.Default(),
@@ -71,6 +71,6 @@ func (s *services) refreshAfterReload() {
 	s.Skill = skill.Default()
 	s.Command = command.Default()
 	s.Subagent = subagent.Default()
-	s.MCP = mcp.Default()
+	s.MCP = mcp.DefaultRegistry()
 	s.Identity = identity.Default()
 }

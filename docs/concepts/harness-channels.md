@@ -5,9 +5,14 @@ each with different cache, lifecycle, and stability properties:
 
 | Channel | What lives there | Cache-friendly? | Mutable mid-session? |
 |---|---|---|---|
-| **System prompt** | Identity, policy, tool schemas, active-skill list, slot-sectioned blocks. | Yes — invariant per session unless a section mutates. | Yes (Use/Drop), but expensive (cache miss). |
-| **`<system-reminder>` blocks** | Session-level / project-level dynamic content: enabled-skills directory, GEN.md/CLAUDE.md memory, ad-hoc notices. | Yes — once attached, the user message is immutable. | No (re-emitted as new attachments, never mutated). |
+| **System prompt** | Identity, output style, engineering defaults, provider quirks, policy, guidelines, environment footer. Slot-sectioned. | Yes — invariant per session unless a section mutates. | Yes (Use/Drop), but expensive (cache miss). |
+| **`<system-reminder>` blocks** | Session-level / project-level dynamic content: **active-skills directory**, GEN.md/CLAUDE.md memory, ad-hoc notices. Attached below the next user message. | Yes — once attached, the user message is immutable. | No (re-emitted as new attachments, never mutated). |
 | **User messages** | The actual prompt the user typed. | Yes — already cached. | No. |
+
+> The active-skills list (what skills the model is currently aware of) used
+> to live in the system prompt. It now rides on user messages as a
+> `<system-reminder source="skills-directory">` block — toggling a skill
+> no longer busts the prompt cache.
 
 The harness chooses which channel to use based on **how often the content
 changes** and **whether the LLM's prompt cache should survive the
@@ -22,7 +27,10 @@ onward — so frequent system-prompt edits are expensive.
 The harness optimizes:
 
 - **System prompt** = "things true for every turn of this session".
-  Identity, policy, output style, base tool definitions. Mutates rarely.
+  Identity, policy, communication style, engineering defaults, tool-
+  usage guidelines, environment. Mutates rarely. (Tool *schemas* are
+  passed separately via the LLM API's `tools` parameter, not in the
+  system prompt text.)
 - **`<system-reminder>` blocks** = "things true now, but may change". Each
   reminder is attached to a *user message* (not the system prompt) and
   re-emitted on session start and after every PostCompact. Because user
@@ -34,21 +42,30 @@ The harness optimizes:
 
 The system prompt is composed of **Sections**, each owning a numbered
 **Slot**. Slots define ordering. Sections within the same slot use
-insertion order. Mutations to a section trigger `Refresh` (lazy
-re-render).
+insertion order, so several sections can stack inside one slot (e.g.
+`identity` + `output` + `engineering` all live in slot 0). Mutations to a
+section trigger `Refresh` (lazy re-render).
 
 ```
-slot 0   identity         (built-in or custom persona)
-slot 1   environment      (cwd, git status, plan-mode notice)
-slot 2   policy           (built-in coding policy)
-slot 3   tools            (rendered tool schemas)
-slot 4   active-skills    (skills with State=active)
-slot 5   harness          (current mode, output style)
-...
+slot 0   identity        built-in or custom persona; output and
+                         engineering sections stack here too
+slot 1   provider        optional provider-specific quirks
+slot 2   policy          safety contract — never overridden
+slot 3   guidelines      tool-usage, task-workflow, when-to-ask,
+                         git-safety (filtered by Scope and isGit)
+slot 4   environment     cwd, git, date, platform, model — volatile,
+                         placed last so daily/cwd changes don't bust
+                         the cache prefix above
 ```
 
-See `internal/core/system/builder.go` and the `Section` and `System`
-types in [`packages/core.md`](../packages/core.md).
+Slot constants live in `internal/core/section.go`; the default applier
+and renderers live in `internal/core/system/catalog.go`. Skills, memory,
+and the agent directory are intentionally **not** slots — they ride on
+the reminder channel (skills, memory) or on tool schemas (agent
+directory) instead.
+
+See [`packages/core.md`](../packages/core.md) for the `Section` and
+`System` types.
 
 ## Reminders
 
@@ -57,7 +74,7 @@ harness has standard providers:
 
 | Provider ID | Source | Re-emit triggers |
 |---|---|---|
-| `skills-directory` | enabled skills list | session start, PostCompact, skill enable/disable |
+| `skills-directory` | active skills (and the "use Skill tool to invoke" preamble) | session start, PostCompact, skill enable/disable/activate |
 | `memory-user` | `~/.gen/GEN.md` and `~/.claude/CLAUDE.md` | session start, PostCompact, file change |
 | `memory-project` | `<project>/GEN.md` and `<project>/CLAUDE.md` | session start, PostCompact, file change, cwd change |
 

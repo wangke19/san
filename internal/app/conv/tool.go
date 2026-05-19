@@ -123,11 +123,11 @@ func (t *ToolExecState) RemainingCalls(startIdx int) []core.ToolCall {
 // --- Tool execution dispatching ---
 
 type DefaultMCPExecutor struct {
-	svc mcp.Service
+	caller *mcp.Caller
 }
 
-func NewMCPExecutor(svc mcp.Service) DefaultMCPExecutor {
-	return DefaultMCPExecutor{svc: svc}
+func NewMCPExecutor(caller *mcp.Caller) DefaultMCPExecutor {
+	return DefaultMCPExecutor{caller: caller}
 }
 
 func (e DefaultMCPExecutor) IsMCPTool(name string) bool {
@@ -135,16 +135,16 @@ func (e DefaultMCPExecutor) IsMCPTool(name string) bool {
 }
 
 func (e DefaultMCPExecutor) ExecuteMCP(ctx context.Context, name string, params map[string]any) (toolresult.ToolResult, error) {
-	if e.svc == nil {
-		return toolresult.NewErrorResult(name, "MCP registry not initialized"), nil
+	if e.caller == nil {
+		return toolresult.NewErrorResult(name, "MCP not initialized"), nil
 	}
-	result, err := e.svc.Registry().CallTool(ctx, name, params)
+	output, isError, err := e.caller.CallTool(ctx, name, params)
 	if err != nil {
 		return toolresult.NewErrorResult(name, err.Error()), nil
 	}
 	return toolresult.ToolResult{
-		Success:  !result.IsError,
-		Output:   mcp.ExtractContent(result.Content),
+		Success:  !isError,
+		Output:   output,
 		Metadata: toolresult.ResultMetadata{Title: name, Icon: "plugin"},
 	}, nil
 }

@@ -28,15 +28,15 @@ type Executor struct {
 	cwd                 string
 	parentModelID       string // Parent conversation's model ID (used when inheriting)
 	hooks               *hook.Engine
-	sessionStore        SubagentSessionStore     // Optional: when set, subagent sessions are persisted
-	parentSessionID     string                   // Parent session ID for linking subagent sessions
-	userInstructions    string                   // ~/.gen/GEN.md + rules
-	projectInstructions string                   // .gen/GEN.md + rules + local
-	isGit               bool                     // whether cwd is a git repository
-	skillsPrompt        string                   // available skills section for capable subagents
-	agentsPrompt        string                   // available agents section for capable subagents
-	mcpGetter           func() []core.ToolSchema // MCP tool schemas from parent
-	mcpRegistry         *mcp.Registry            // MCP registry for tool execution
+	sessionStore        SubagentSessionStore // Optional: when set, subagent sessions are persisted
+	parentSessionID     string               // Parent session ID for linking subagent sessions
+	userInstructions    string               // ~/.gen/GEN.md + rules
+	projectInstructions string               // .gen/GEN.md + rules + local
+	isGit               bool                 // whether cwd is a git repository
+	skillsPrompt        string               // available skills section for capable subagents
+	agentsPrompt        string               // available agents section for capable subagents
+	mcpTools            mcp.Tools            // tool schemas + execution
+	mcpServers          mcp.Servers          // connect/disconnect for per-subagent server sets
 }
 
 type SubagentSessionStore interface {
@@ -79,11 +79,12 @@ func (e *Executor) SetCapabilities(skillsPrompt, agentsPrompt string) {
 	e.agentsPrompt = agentsPrompt
 }
 
-// SetMCP provides the parent's MCP tool getter and registry so subagents
-// can access MCP tools (schemas via getter, execution via registry).
-func (e *Executor) SetMCP(getter func() []core.ToolSchema, registry *mcp.Registry) {
-	e.mcpGetter = getter
-	e.mcpRegistry = registry
+// SetMCP wires the parent's MCP access for the subagent. Tool schemas
+// and execution flow through tools; connection lifecycle for any
+// per-subagent server set flows through servers.
+func (e *Executor) SetMCP(tools mcp.Tools, servers mcp.Servers) {
+	e.mcpTools = tools
+	e.mcpServers = servers
 }
 
 // SetSessionStore configures session persistence for subagent conversations.
@@ -242,8 +243,8 @@ func (e *Executor) fireSubagentStart(req AgentRequest, agentHookID string) {
 func (e *Executor) buildAgent(ctx context.Context, rc *runConfig, agentCwd string, onToolExec func(string, map[string]any), onEvent func(core.Event)) (core.Agent, func(), error) {
 	cleanup := func() {}
 
-	if len(rc.config.McpServers) > 0 && e.mcpRegistry != nil {
-		mcpCleanup, errs := mcp.ConnectServers(ctx, e.mcpRegistry, rc.config.McpServers)
+	if len(rc.config.McpServers) > 0 && e.mcpServers != nil {
+		mcpCleanup, errs := mcp.ConnectServers(ctx, e.mcpServers, rc.config.McpServers)
 		if mcpCleanup != nil {
 			cleanup = mcpCleanup
 		}
@@ -270,7 +271,11 @@ func (e *Executor) buildAgent(ctx context.Context, rc *runConfig, agentCwd strin
 	)
 
 	// Tools — adapt legacy tool registry + MCP tools
-	toolSet := newAgentToolSet(rc.config.AllowTools.Names(), rc.config.DenyTools.BareNames(), e.mcpGetter)
+	var mcpGetter func() []core.ToolSchema
+	if e.mcpTools != nil {
+		mcpGetter = e.mcpTools.GetToolSchemas
+	}
+	toolSet := newAgentToolSet(rc.config.AllowTools.Names(), rc.config.DenyTools.BareNames(), mcpGetter)
 	toolSet.AgentDirectory = agentDirectoryGetter
 	schemas := filterSchemasForPermission(toolSet.Tools(), rc.permMode, rc.config.AllowTools)
 	var ag core.Agent
@@ -282,8 +287,8 @@ func (e *Executor) buildAgent(ctx context.Context, rc *runConfig, agentCwd strin
 	}))
 
 	// Add MCP tool executors
-	if e.mcpRegistry != nil {
-		mcpCaller := mcp.NewCaller(e.mcpRegistry)
+	if e.mcpTools != nil {
+		mcpCaller := mcp.NewCaller(e.mcpTools)
 		for _, t := range mcp.AsCoreTools(schemas, mcpCaller) {
 			tools.Add(t, "mcp:"+t.Name())
 		}

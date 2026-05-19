@@ -33,7 +33,7 @@ each package works internally and what contract it exposes upward.
 | [`search`](search.md) | feature | Pluggable web search backends behind a small `Provider` interface. |
 | [`session`](session.md) | feature | Transcript persistence, resume, fork, projection. |
 | [`setting`](setting.md) | feature | Settings loader + central permission decision gate. |
-| [`skill`](skill.md) | feature | Skill loader, state store, system-prompt section renderer. |
+| [`skill`](skill.md) | feature | Skill loader, state store, active-skills block consumed by the `skills-directory` reminder. |
 | [`subagent`](subagent.md) | feature | Subagent registry + `Executor` that spawns background `core.Agent` instances. |
 | [`task`](task.md) | feature | Background task manager (bash and agent tasks). |
 | [`tool`](tool.md) | feature | Tool registry, schemas, permission gate, side-effect store. |

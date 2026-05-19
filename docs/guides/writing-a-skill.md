@@ -42,7 +42,7 @@ You are drafting release notes for the version supplied as the argument.
 | Field | Required | Purpose |
 |---|---|---|
 | `name` | yes | Slash command name (lowercase, kebab-case). |
-| `description` | yes | One-liner shown in selectors and the system prompt. |
+| `description` | yes | One-liner shown in selectors and in the per-turn active-skills reminder. |
 | `namespace` | no | Group prefix (e.g. `git`, `jira`); invoked as `/git:branch-cleanup`. |
 | `allowed-tools` | no | Restrict the skill's tool subset. Default = all tools. |
 | `argument-hint` | no | Hint shown after `/skill-name ` in the autocompleter. |
@@ -70,8 +70,8 @@ Each skill is in one of three states; cycle with `/skill`:
 |---|---|
 | `disable` | Hidden. Not in the slash-command list. Model unaware. |
 | `enable` | Visible as a slash command. Model unaware (user-invoked only). |
-| `active` | Visible as a slash command *and* listed in the model's
-  system prompt so it can invoke the skill on its own. |
+| `active` | Visible as a slash command *and* listed in the per-turn
+  `skills-directory` reminder so the model can invoke it on its own. |
 
 Default for newly discovered skills is `enable`. State is persisted in
 `~/.gen/skills.json` (user level) or `<project>/.gen/skills.json`
@@ -95,8 +95,9 @@ Default for newly discovered skills is `enable`. State is persisted in
 
 ## Common Pitfalls
 
-- **Description too long.** It is rendered into the system prompt for
-  active skills; long descriptions waste context. Aim for one line.
+- **Description too long.** It is rendered into the active-skills
+  reminder attached to every user message; long descriptions waste
+  context on every turn. Aim for one line.
 - **`allowed-tools` filters silently.** If the skill assumes `Write` but
   `allowed-tools: [Read]` is set, the tool call will be denied — the
   skill won't say why.

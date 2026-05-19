@@ -23,39 +23,92 @@ Config lives at `<project>/.gen/mcp.json` (Gen Code) or
 
 ## Contract
 
+The package has four natural roles. Two surface as small interfaces;
+one uses free functions; one stays on the concrete `*Registry`.
+
+| Role | Shape | Consumers |
+|---|---|---|
+| **Tools** — tool discovery + execution | `interface{ GetToolSchemas; CallTool }` | agent main loop, slash-command tool selector, subagent executor |
+| **Servers** — server listing + connect lifecycle | `interface{ List; Connect; Disconnect; ConnectAll; DisconnectAll; GetConfig }` | `mcp.ConnectServers` (free function), subagent executor |
+| **ConfigStore** — load / edit / save server definitions | free functions `PrepareServerEdit` / `ApplyServerEdit` | `gen mcp edit` CLI subcommand |
+| **Manager** — full server-state mutation (add / remove / set-disabled / set-status) | concrete `*Registry` | TUI `/mcp` selector — needs the wide surface and there is exactly one consumer |
+
+`*Registry` satisfies both interfaces; compile-time checks guarantee
+this. Consumers narrow by declaration:
+
+```go
+var tools   mcp.Tools   = mcp.DefaultRegistry()
+var servers mcp.Servers = mcp.DefaultRegistry()
+```
+
 ```go
 package mcp
 
-// Service is the public contract for the mcp module.
-type Service interface {
-    // connection
-    ListServers() []Server
-    Connect(ctx context.Context, name string) error
-    ConnectAll(ctx context.Context) []error
-    Disconnect(name string) error
-    Reconnect(ctx context.Context, name string) error
-
-    // tools
-    ListTools() []core.ToolSchema
-    NewCaller() *Caller
-
-    // config
-    EditConfig(name string) (*EditInfo, error)
-    SaveConfig(info *EditInfo) error
-
-    // registry access (backward compat)
-    Registry() *Registry
+// Tools — list MCP tool schemas and call one by name. Implemented by *Registry.
+type Tools interface {
+    GetToolSchemas() []core.ToolSchema
+    CallTool(ctx context.Context, fullName string, args map[string]any) (*ToolResult, error)
 }
+
+// Servers — manage MCP server connections. Implemented by *Registry.
+type Servers interface {
+    List() []Server
+    Connect(ctx context.Context, name string) error
+    Disconnect(name string) error
+    ConnectAll(ctx context.Context) []error
+    DisconnectAll()
+    GetConfig(name string) (ServerConfig, bool)
+}
+
+// *Registry is the only implementation; covers the Manager role and
+// satisfies both interfaces above.
+type Registry struct { /* unexported */ }
+
+var (
+    _ Tools   = (*Registry)(nil)
+    _ Servers = (*Registry)(nil)
+)
+
+// Free functions.
+func NewCaller(tools Tools) *Caller
+func PrepareServerEdit(reg *Registry, name string) (*EditInfo, error)
+func ApplyServerEdit(reg *Registry, info *EditInfo) error
+func ConnectServers(ctx context.Context, servers Servers, serverNames []string) (cleanup func(), errs []error)
+
+// Package-level access.
+func Initialize(opts Options) error
+func DefaultRegistry() *Registry
+func SetDefaultRegistry(reg *Registry)   // test-only
+func ResetDefaultRegistry()              // test-only
 ```
 
-### Known Violations
+### Why these interfaces, not a god `Service`
 
-- **Rule 1 (small).** 10 methods. Suggested split: `MCPConnections`,
-  `MCPTools`, `MCPConfigEditor`.
-- **Rule 7 (escape hatch).** `Registry() *Registry` is even labeled
-  "backward compat" — remove it.
-- **Rule 5.** `Default()` returns `Service`.
-- **Singleton via `Default()` + `DefaultIfInit()`.**
+The previous `mcp.Service` interface bundled all four roles into a
+single 10-method bag. It had exactly one implementation and zero mocks,
+and most methods just renamed `*Registry` methods or wrapped existing
+free functions. By [TEMPLATE Rule 3](TEMPLATE.md#contract-rules)
+(small interfaces at the consumer side, no producer-side god unions)
+it was deleted.
+
+The replacement is **role interfaces**, not "no interfaces":
+
+- A consumer that just lists tools (`agent.go`, `slash_command.go`)
+  reads `Tools` — two methods.
+- A consumer that connects a curated server set (`ConnectServers`,
+  `subagent.Executor.SetMCP`) reads `Servers` — six methods.
+- A consumer that mutates server state (`MCPSelector` —
+  `RemoveServer`, `SetDisabled`, `SetConnectError`, …) genuinely needs
+  the wide surface and takes `*Registry` directly. Wrapping it in a
+  ten-method interface earns nothing — Rule 1 says no.
+
+`*Registry` is the implementation but **not** the public face of the
+package. Most documentation, most consumer code, and the most stable
+contract live on the role interfaces.
+
+### Remaining Known Violations
+
+None.
 
 ## Internals
 

@@ -58,10 +58,9 @@ func (m *model) activeIdentityBody() string {
 
 func (m *model) buildAgentParams() agent.BuildParams {
 	var mcpTools []core.Tool
-	if m.services.MCP.Registry() != nil {
-		schemas := m.services.MCP.Registry().GetToolSchemas()
-		mcpCaller := mcp.NewCaller(m.services.MCP.Registry())
-		mcpTools = mcp.AsCoreTools(schemas, mcpCaller)
+	if m.services.MCP != nil {
+		schemas := m.services.MCP.GetToolSchemas()
+		mcpTools = mcp.AsCoreTools(schemas, mcp.NewCaller(m.services.MCP))
 	}
 
 	maxTokens := kit.GetMaxTokens(m.services.LLM.Store(), m.env.CurrentModel, setting.DefaultMaxTokens)
@@ -374,8 +373,8 @@ func (m *model) ReconfigureAgentTool() {
 	}
 	executor.SetContext(m.env.CachedUserInstructions, m.env.CachedProjectInstructions, m.env.IsGit)
 	executor.SetCapabilities(m.services.Skill.PromptSection(), m.services.Subagent.PromptSection())
-	if m.services.MCP.Registry() != nil {
-		executor.SetMCP(m.services.MCP.Registry().GetToolSchemas, m.services.MCP.Registry())
+	if m.services.MCP != nil {
+		executor.SetMCP(m.services.MCP, m.services.MCP)
 	}
 
 	adapter := subagent.NewExecutorAdapter(executor)

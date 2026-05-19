@@ -6,8 +6,9 @@ layer: feature
 # skill
 
 Loads markdown-defined skills from user / project / plugin scopes, tracks
-their enable state, and renders the section injected into the system prompt
-for active skills.
+their enable state, and renders the active-skills directory that the
+harness attaches to user messages via the `skills-directory` reminder
+(see [`concepts/harness-channels.md`](../concepts/harness-channels.md)).
 
 ## Purpose
 
@@ -20,7 +21,8 @@ hidden (`disabled`). This package:
    `.claude/skills/`, `.gen/plugins/*/skills/`, `.gen/skills/`) with
    project overriding user overriding Claude-compat.
 2. Persists per-skill state in user / project state stores.
-3. Renders the active-skills section consumed by `core.System`.
+3. Renders the active-skills block consumed by the `skills-directory`
+   reminder provider in `internal/app`.
 
 For the broader extension model see
 [`concepts/extension-model.md`](../concepts/extension-model.md). A
@@ -28,8 +30,9 @@ how-to-author-a-skill guide is tracked in `notes/tech-debt.md`.
 
 ## Contract
 
-The seam consumed by `internal/app`, `internal/command`, and
-`internal/core/system`:
+The seam consumed by `internal/app` (wires `PromptSection` into the
+`skills-directory` reminder provider) and `internal/command` (slash
+command surface):
 
 ```go
 package skill
@@ -49,8 +52,9 @@ type Service interface {
     SetEnabled(name string, enabled bool, userLevel bool) error
     GetDisabledAt(userLevel bool) map[string]bool
 
-    // system prompt
-    PromptSection() string                       // rendered section for system prompt
+    // rendering — body consumed by the skills-directory reminder, not
+    // the system prompt
+    PromptSection() string                       // rendered active-skills block
     GetSkillInvocationPrompt(name string) string // full skill content for injection
 
     // concrete access
@@ -98,9 +102,10 @@ was the only Rule 4 (anonymous struct) violation in the package.
   (`scripts/` / `references/` / `assets/`).
 - State (`disable` → `enable` → `active` → `disable`) cycles via
   `SkillState.NextState()`; the TUI's `/skill` flow uses this.
-- Active skills render into the system prompt through `PromptSection()`;
-  enable-only skills surface as slash commands but stay out of the system
-  prompt.
+- Active skills render through `PromptSection()` and are delivered to
+  the model via the `skills-directory` reminder attached to each user
+  message; enable-only skills surface as slash commands but stay out of
+  the model's awareness entirely.
 
 ## Lifecycle
 
@@ -126,5 +131,5 @@ internal/skill/lazy_loading_test.go     — verifies content stays on disk
 
 - Code: `internal/skill/`
 - Concepts: [`concepts/extension-model.md`](../concepts/extension-model.md), [`concepts/harness-channels.md`](../concepts/harness-channels.md)
-- Related: [`packages/command.md`](command.md) (slash-command surface), [`packages/plugin.md`](plugin.md) (plugin-scoped skills), [`packages/core.md`](core.md) (system prompt assembly)
+- Related: [`packages/command.md`](command.md) (slash-command surface), [`packages/plugin.md`](plugin.md) (plugin-scoped skills), [`packages/reminder.md`](reminder.md) (the channel that delivers `PromptSection`)
 - Layer: `feature` (see [`reference/dependency-rules.md`](../reference/dependency-rules.md))

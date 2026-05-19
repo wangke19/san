@@ -45,7 +45,7 @@ type CommandDeps struct {
 	// Domain services
 	Skill   skill.Service
 	Plugin  plugin.Service
-	MCP     mcp.Service
+	MCP     *mcp.Registry
 	Tracker tracker.Service
 	Cron    cron.Service
 	ToolSvc tool.Service
@@ -442,7 +442,7 @@ func (c *CommandController) handleGlobCommand(ctx context.Context, args string) 
 func (c *CommandController) handleToolCommand(_ context.Context, _ string) (string, tea.Cmd, error) {
 	var mcpTools func() []core.ToolSchema
 	if c.deps.MCP != nil {
-		mcpTools = c.deps.MCP.ListTools
+		mcpTools = c.deps.MCP.GetToolSchemas
 	}
 	if err := c.deps.Input.Tool.EnterSelect(c.deps.Width, c.deps.Height, c.deps.DisabledTools, mcpTools); err != nil {
 		return "", nil, err

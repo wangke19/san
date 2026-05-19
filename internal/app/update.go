@@ -18,6 +18,7 @@ import (
 	"github.com/genai-io/gen-code/internal/hook"
 	"github.com/genai-io/gen-code/internal/image"
 	"github.com/genai-io/gen-code/internal/llm"
+	"github.com/genai-io/gen-code/internal/mcp"
 	"go.uber.org/zap"
 
 	"github.com/genai-io/gen-code/internal/log"
@@ -569,7 +570,7 @@ func (m *model) approvalDeps() input.ApprovalFlowDeps {
 		Height:             m.env.Height,
 		Cwd:                m.env.CWD,
 		ProgressHub:        m.conv.ProgressHub,
-		MCPExecutor:        conv.NewMCPExecutor(m.services.MCP),
+		MCPExecutor:        conv.NewMCPExecutor(mcp.NewCaller(m.services.MCP)),
 	}
 }
 

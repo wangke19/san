@@ -1,38 +1,67 @@
+// Package mcp is the Model Context Protocol client. It manages a set of
+// configured MCP servers and exposes the tools they advertise to the
+// agent loop.
+//
+// Two interfaces describe what the package can be asked to do:
+//
+//   - Tools   — list MCP tool schemas, call one by name.
+//   - Servers — list configured MCP servers, connect/disconnect, look up config.
+//
+// Config editing (used by `gen mcp edit`) is exposed as the two free
+// functions PrepareServerEdit / ApplyServerEdit. Full server-state
+// mutation (RemoveServer / SetDisabled / SetConnectError / …) is
+// available on the concrete *Registry — only the TUI /mcp selector
+// needs that surface today, and a 10-method interface would just be
+// *Registry rewritten.
+//
+// *Registry implements both interfaces. Callers narrow by declaration:
+//
+//	var tools mcp.Tools = mcp.DefaultRegistry()
 package mcp
 
 import (
 	"context"
-	"sync"
 
 	"github.com/genai-io/gen-code/internal/core"
 )
 
-// Service is the public contract for the mcp module.
-type Service interface {
-	// connection
-	ListServers() []Server                            // all configured servers with status
-	Connect(ctx context.Context, name string) error   // connect to a named server
-	ConnectAll(ctx context.Context) []error           // connect to all configured servers
-	Disconnect(name string) error                     // disconnect from a named server
-	Reconnect(ctx context.Context, name string) error // disconnect then reconnect
-
-	// tools
-	ListTools() []core.ToolSchema // tool schemas from all connected servers
-	NewCaller() *Caller           // create execution caller
-
-	// config
-	EditConfig(name string) (*EditInfo, error) // prepare config for editing
-	SaveConfig(info *EditInfo) error           // save edited config
-
-	// Registry returns the concrete registry. Tracked as a "Known Violation"
-	// in docs/packages/mcp.md and notes/tech-debt.md — removing it requires
-	// touching subagent.Executor.SetMCP, input.SelectorDeps.MCPRegistry, and
-	// conv.DefaultMCPExecutor signatures across the codebase.
-	Registry() *Registry
+// Tools lets a caller list and execute MCP tools across all connected
+// servers. List with GetToolSchemas, invoke with CallTool. Implemented
+// by *Registry.
+//
+// Consumers: agent main loop, slash-command tool selector, subagent
+// executor. Each takes Tools rather than *Registry to express that it
+// only listens to tool listing and tool execution, not server
+// management.
+type Tools interface {
+	GetToolSchemas() []core.ToolSchema
+	CallTool(ctx context.Context, fullName string, args map[string]any) (*ToolResult, error)
 }
 
-// Compile-time check: *service implements Service.
-var _ Service = (*service)(nil)
+// Servers lets a caller manage MCP server connections: enumerate
+// configured servers, connect or disconnect them individually or in
+// bulk, and read per-server config. Implemented by *Registry.
+//
+// Consumers: the ConnectServers free function (which the subagent
+// executor uses to bring up a curated server set per invocation). The
+// TUI /mcp selector needs methods beyond this interface (RemoveServer,
+// SetDisabled, SetConnectError, …) and depends on *Registry directly.
+type Servers interface {
+	List() []Server
+	Connect(ctx context.Context, name string) error
+	Disconnect(name string) error
+	ConnectAll(ctx context.Context) []error
+	DisconnectAll()
+	GetConfig(name string) (ServerConfig, bool)
+}
+
+// Compile-time guarantee that *Registry satisfies both interfaces.
+// Adding a method to *Registry never breaks consumers; removing a
+// method from an interface requires updating both sides.
+var (
+	_ Tools   = (*Registry)(nil)
+	_ Servers = (*Registry)(nil)
+)
 
 // Options holds all dependencies for initialization.
 type Options struct {
@@ -40,7 +69,10 @@ type Options struct {
 	PluginServers func() []PluginServer
 }
 
-// Initialize creates and configures the MCP registry singleton.
+// Initialize creates the MCP registry and installs it as the package-level
+// default. Idempotent: callers may invoke it more than once (e.g. after a
+// cwd change or plugin reload) and downstream callers reading
+// DefaultRegistry will see the latest instance.
 func Initialize(opts Options) error {
 	reg, err := NewRegistry(opts.CWD)
 	if err != nil {
@@ -50,103 +82,34 @@ func Initialize(opts Options) error {
 		reg.PluginServers = opts.PluginServers
 		reg.configs = reg.mergePluginMCPConfigs(reg.configs)
 	}
-	SetDefault(&service{reg: reg})
+	defaultRegistry = reg
 	return nil
 }
 
-// ── singleton ──────────────────────────────────────────────
+// DefaultRegistry returns the package-level MCP registry. Returns the
+// empty pre-Initialize registry if Initialize has not run.
+//
+// This is the only seam. There is no separate Service interface — every
+// consumer (subagent executor, TUI selector, agent tool wiring,
+// cmd subcommands) depends on *Registry directly. Tool execution goes
+// through NewCaller(reg). Config editing uses the free functions
+// PrepareServerEdit / ApplyServerEdit.
+func DefaultRegistry() *Registry {
+	return defaultRegistry
+}
 
-var (
-	mu       sync.RWMutex
-	instance Service
-)
-
-// Default returns the singleton Service instance.
-// Panics if Initialize has not been called.
-func Default() Service {
-	mu.RLock()
-	s := instance
-	mu.RUnlock()
-	if s == nil {
-		panic("mcp: not initialized")
+// SetDefaultRegistry replaces the package-level registry. Intended for
+// tests. A nil argument restores the empty pre-Initialize registry.
+func SetDefaultRegistry(reg *Registry) {
+	if reg == nil {
+		defaultRegistry = newEmptyRegistry()
+		return
 	}
-	return s
+	defaultRegistry = reg
 }
 
-// DefaultIfInit returns the singleton Service instance, or nil if not yet
-// initialized. Useful for nil-guards that used to check DefaultRegistry == nil.
-func DefaultIfInit() Service {
-	mu.RLock()
-	s := instance
-	mu.RUnlock()
-	return s
-}
-
-// SetDefault replaces the singleton instance. Intended for tests.
-func SetDefault(s Service) {
-	mu.Lock()
-	instance = s
-	mu.Unlock()
-}
-
-// ResetService clears the singleton instance. Intended for tests.
-func ResetService() {
-	mu.Lock()
-	instance = nil
-	mu.Unlock()
-}
-
-// WrapRegistry creates a Service from a *Registry. Used by tests.
-func WrapRegistry(reg *Registry) Service {
-	return &service{reg: reg}
-}
-
-// ── implementation ─────────────────────────────────────────
-
-// service wraps the legacy Registry to satisfy the Service interface.
-type service struct {
-	reg *Registry
-}
-
-func (s *service) ListServers() []Server {
-	return s.reg.List()
-}
-
-func (s *service) Connect(ctx context.Context, name string) error {
-	return s.reg.Connect(ctx, name)
-}
-
-func (s *service) ConnectAll(ctx context.Context) []error {
-	return s.reg.ConnectAll(ctx)
-}
-
-func (s *service) Disconnect(name string) error {
-	return s.reg.Disconnect(name)
-}
-
-func (s *service) Reconnect(ctx context.Context, name string) error {
-	if err := s.reg.Disconnect(name); err != nil {
-		return err
-	}
-	return s.reg.Connect(ctx, name)
-}
-
-func (s *service) ListTools() []core.ToolSchema {
-	return s.reg.GetToolSchemas()
-}
-
-func (s *service) NewCaller() *Caller {
-	return NewCaller(s.reg)
-}
-
-func (s *service) EditConfig(name string) (*EditInfo, error) {
-	return PrepareServerEdit(s.reg, name)
-}
-
-func (s *service) SaveConfig(info *EditInfo) error {
-	return ApplyServerEdit(s.reg, info)
-}
-
-func (s *service) Registry() *Registry {
-	return s.reg
+// ResetDefaultRegistry restores the empty pre-Initialize registry.
+// Intended for tests.
+func ResetDefaultRegistry() {
+	defaultRegistry = newEmptyRegistry()
 }
