@@ -62,7 +62,9 @@ View() 自顶向下决定用哪种布局：
         分隔符
         队列预览              ◄── 流式期间用户排队的输入
         textarea             ◄── m.userInput.RenderTextarea()
-        suggestion overlay   ◄── 自动补全面板
+        suggestion list      ◄── 自动补全列表：敲 "/" 出 slash 命令、
+                                 敲 "@<filename>" 出文件名等
+                                 (m.userInput.Suggestions)
         分隔符
         status line          ◄── 模型名、token、模式
 ```

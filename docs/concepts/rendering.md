@@ -65,7 +65,9 @@ View() decides which layout, top-down:
         separator
         queue preview         ◄── if user queued input while streaming
         textarea              ◄── m.userInput.RenderTextarea()
-        suggestions overlay   ◄── if autocomplete is showing
+        suggestion list       ◄── autocomplete entries shown below
+                                  the textarea when you type "/" or
+                                  "@<filename>" etc. (m.userInput.Suggestions)
         separator
         status line           ◄── model name, tokens, mode
 ```
