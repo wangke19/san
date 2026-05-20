@@ -13,130 +13,130 @@ becomes state; this doc covers how state becomes characters on screen.
 > the alt-screen region. The "rendering pipeline" below is entirely
 > string composition; the terminal does the actual drawing.
 
-## Two render paths, same render functions
+## Mental model: two surfaces
 
-Every visible byte in the TUI is produced by code in
-`internal/app/conv/view.go` — `RenderMessageAt`, `RenderUserMessage`,
-`RenderAssistantMessage`, `RenderToolCalls`, and friends. But the
-**output is consumed by two completely different mechanisms**:
+The terminal window has **two surfaces** during a session, and every
+rendered string ends up on exactly one of them:
 
 ```
-┌─ Rendering primitives in internal/app/conv ───────────────┐
-│                                                            │
-│   RenderMessageAt  ─┬─  Markdown via MDRenderer            │
-│   RenderUserMsg     ├─  Tool call + result blocks           │
-│   RenderToolCalls   ├─  System notices                      │
-│   ...               └─  Spinners / progress indicators     │
-│                                                            │
-└────────────────┬──────────────────┬───────────────────────┘
-                 │                  │
-                 ▼                  ▼
-   ┌────────────────────┐   ┌──────────────────────┐
-   │  CommitMessages    │   │  View()              │
-   │  → tea.Println     │   │  → bubbletea repaint │
-   │                    │   │                      │
-   │  committed         │   │  active content      │
-   │  messages only     │   │  (uncommitted +      │
-   │  (Stream.Active    │   │   spinners + modals  │
-   │  == false)         │   │   + input strip)     │
-   └────────────────────┘   └──────────────────────┘
-                 │                  │
-                 ▼                  ▼
-   ┌────────────────────┐   ┌──────────────────────┐
-   │ Native terminal    │   │ Bottom N lines       │
-   │ scrollback (frozen │   │ (redrawn every       │
-   │ once written)      │   │  Update)             │
-   └────────────────────┘   └──────────────────────┘
+m.conv.Messages = [ msg0, msg1, msg2, msg3 | msg4, msg5 ]
+                                            ▲
+                                            CommittedCount = 4
+
+┌─ surface ──────────────────┬─ written by ───────┬─ contents ────────────┐
+│ Native terminal scrollback │ tea.Println        │ msg0..msg3            │
+│ (frozen once written;      │ (one call per      │ — committed messages  │
+│  you can scroll up to it)  │  committed message)│                       │
+├────────────────────────────┼────────────────────┼───────────────────────┤
+│ Bubble Tea repaint zone    │ View()             │ msg4..msg5 +          │
+│ (bottom N lines; rebuilt   │ (called every      │ pending spinners +    │
+│  on every Update)          │  Update)           │ input strip           │
+└────────────────────────────┴────────────────────┴───────────────────────┘
 ```
 
-The split lets streaming text and tool spinners update live (repaint
-zone) while finished messages stay frozen in scrollback the user can
-scroll up to.
+A **streaming** assistant reply lives in the repaint zone while
+`Stream.Active == true`; when the stream finishes, `CommitMessages`
+makes one `tea.Println` call to **move** the same rendered string into
+scrollback above. `CommittedCount` then advances so the repaint zone
+stops re-drawing it. The user sees one visual transition, not a
+duplicate. The rule that prevents double-rendering is in
+`renderAndCommit(checkReady=true)`: never commit the last message while
+`Stream.Active` is true.
 
-## What View() composes
+**Both surfaces share the same render functions.** `RenderMessageAt`
+is what produces each message's string; what differs is the index
+range (scrollback: `0..CommittedCount`; repaint zone:
+`CommittedCount..len(Messages)`).
 
-`(*model).View()` in `internal/app/view.go` is called after every
-`Update`. It picks one of three top-level layouts:
+## View() composes the repaint zone
+
+`(*model).View()` in [`internal/app/view.go`](../../internal/app/view.go)
+runs after every `Update` and returns the string for the repaint zone.
+**Signature is `func (m *model) View() string` — no input parameters**;
+that's a Bubble Tea contract. Everything View needs is read from the
+receiver `m`. The renderers View dispatches to (`RenderActiveContent`,
+etc.) take a `conv.RenderContext` struct, which `m.messageRenderParams()`
+builds from `m`'s fields on each call.
+
+View() picks one of four layouts, top-down:
 
 ```
-View() decides which layout, top-down:
-
-  1. Is a popup active?        ──► render that popup fullscreen
-     (provider picker, tools picker, etc. — see data-flow Path A)
-
-  2. Is a modal active?        ──► render modal between separator bars
-     (Question modal, Approval modal)
-
-  3. Otherwise (normal mode):
-        chat section          ◄── RenderActiveContent
-        turn usage line
-        separator
-        queue preview         ◄── if user queued input while streaming
-        textarea              ◄── m.userInput.RenderTextarea()
-        suggestion list       ◄── autocomplete entries shown below
-                                  the textarea when you type "/" or
-                                  "@<filename>" etc. (m.userInput.Suggestions)
-        separator
-        status line           ◄── model name, tokens, mode
+View()
+  1. !m.env.Ready              ──► "\n  Loading..."
+  2. active popup?             ──► popup.Render() — fullscreen
+                                   (slash-command pickers: /model,
+                                   /tools, /skills, ...)
+  3. active modal?             ──► modal.Render() wrapped between
+                                   separator bars
+                                   (Question modal, Approval modal)
+  4. otherwise (normal mode) ──► renderNormalView()
+        ├─ chat section        ── conv.RenderActiveContent
+        ├─ turn-usage summary
+        ├─ separator
+        ├─ queue preview       ── if input was queued during a stream
+        ├─ textarea
+        ├─ suggestion list     ── /-command and @-file autocomplete
+        ├─ separator
+        └─ status line         ── model name, tokens, mode
 ```
 
-Popups and modals are the same idea (UI that pops up over the input)
-but use different render flows because modals stack with the chat
-above and below them, while popups take the whole screen.
+Popups (full-screen) and modals (wrapped) look like the same idea but
+have different render flows because the chat content stays visible
+behind a modal, not behind a popup.
 
 ## How a single message is rendered
 
-`RenderMessageAt(params, idx, isStreaming)` dispatches by
-`msg.Role`:
+`RenderMessageAt(ctx, idx, isStreaming)` dispatches by `msg.Role`:
 
 ```
-              ┌─ Role: User ─┐
-              │              │
-              │  has ToolResult?   ──► RenderToolResultInline
-              │  else              ──► RenderUserMessage
-              │                          (text + images, md-rendered)
-              │
-RenderMessageAt
-              │
-              ├─ Role: Notice ──► RenderSystemMessage
-              │                   (plain text, muted color)
-              │
-              └─ Role: Assistant ──► renderAssistantWithTools
-                                       ├─ content + thinking (md)
-                                       ├─ tool calls block
-                                       └─ paired tool results
+                ┌── Role: User ──┐
+                │                │
+                │ ToolResult?    ──► RenderToolResultInline
+                │ otherwise      ──► RenderUserMessage
+                │                     (text + images, md-rendered)
+                │
+RenderMessageAt ─┤
+                │
+                ├── Role: Notice ──► RenderSystemMessage
+                │                     (plain text, muted color)
+                │
+                └── Role: Assistant ──► renderAssistantWithTools
+                                          ├─ assistant text + thinking
+                                          │   (md-rendered)
+                                          └─ tool-calls block (each
+                                              call + its inlined
+                                              result, if available)
 ```
 
-`renderAssistantWithTools` walks forward from this message's index to
-collect every immediately-following ToolResult message — those are
-the results paired to this assistant turn's tool calls — and renders
-them as a single tool-calls block beneath the assistant text.
+`renderAssistantWithTools` does **not** scan the message list to find
+its paired results — `ctx.InlinedResults` was precomputed once at the
+top of the render pass and tells it which `ToolCallID → ToolResultData`
+entries to inline. See "Tool calls and inlined results" below.
 
-## Markdown rendering (MDRenderer)
+## Markdown via MDRenderer
 
-`internal/app/conv/markdown.go` wraps [glamour](https://github.com/charmbracelet/glamour)
-with two non-default behaviors:
+[`internal/app/conv/markdown.go`](../../internal/app/conv/markdown.go)
+wraps [glamour](https://github.com/charmbracelet/glamour). Five
+behaviors are intentional and not glamour defaults:
 
-| Concern | What MDRenderer does |
+| Concern | Behavior |
 | --- | --- |
-| Width | Built per terminal width (`width − 4` to account for the `● ` indent). `ResizeMDRenderer` rebuilds it on `WindowSizeMsg`. |
-| Background | Auto-detects dark vs light terminal background. `rebuildIfNeeded()` rebuilds on every `Render` if it changed. |
-| Tables | Extracted before glamour sees them; rendered with lipgloss table primitives for full border control. |
-| Soft line breaks | LLMs hard-wrap at ~80 cols; the renderer joins soft-wrapped paragraphs so glamour can re-wrap at actual width. |
-| Inline tokens | Custom inline-markdown pass for parts glamour doesn't style well (e.g., backticks inside other formatting). |
+| Width | Built for the current terminal width, minus 4 for the `● ` indent. `ResizeMDRenderer` rebuilds it on `WindowSizeMsg`. |
+| Background | Auto-detects dark vs light. `rebuildIfNeeded()` rebuilds inside `Render` if the terminal flipped themes. |
+| Tables | Pulled out before glamour sees them; rendered with lipgloss table primitives for full border control. |
+| Soft line breaks | LLMs hard-wrap at ~80 cols. Soft-wrapped paragraphs get joined before glamour so it can re-wrap at the real width. |
+| Inline tokens | A custom inline-markdown pass styles things glamour handles poorly (e.g. backticks inside other formatting). |
 
-Why width matters for rendering: glamour computes column widths from
-its configured width and wraps text. If width changes (terminal
-resize), wrapped content from the old width still sits in scrollback
-— but the bottom repaint zone uses the new width. That's the source
-of the "scrollback looks weird after resize" issue and why
-`handleWindowResize` calls `reflowScrollback`, which **rerenders
-every committed message at the new width and clears + redraws
-scrollback**.
+Width matters: glamour computes column widths from its configured
+width. If the terminal resizes, glamour-wrapped content already in
+scrollback is now sized for the old width but the repaint zone uses
+the new width. That mismatch is exactly what `reflowScrollback`
+addresses (see Resize below).
 
-## Tool calls and results
+## Tool calls and inlined results
 
-`internal/app/conv/tool_render.go` renders the assistant's tool calls:
+[`internal/app/conv/tool_render.go`](../../internal/app/conv/tool_render.go)
+renders the tool-calls block under an assistant message:
 
 ```
 ● Bash(npm test)                        ← tool name + summary args
@@ -146,57 +146,47 @@ scrollback**.
        … 47 more lines (Ctrl-O to expand)
 ```
 
-State that drives this:
+State that drives it:
 
-- **Pending vs done**: each tool call is in `m.conv.Tool.PendingCalls`
-  until its `ToolResult` arrives. While pending, a spinner shows next
-  to the tool name.
-- **Expanded / collapsed**: per-message `Expanded` flag toggled by
-  Ctrl-O. Collapsed shows a preview + line count; expanded shows full
-  content.
-- **Error**: `ToolResult.IsError` flips the icon (✓ → ✗) and tints
-  the result.
-- **Parallel mode**: when multiple tool calls run in parallel, the
-  block changes layout (each call shows its progress separately).
+- **Pending vs done** — a tool call sits in `m.conv.Tool.PendingCalls`
+  until its `ToolResult` arrives. While pending, the tool name shows
+  a spinner.
+- **Expanded / collapsed** — per-message `Expanded` flag, toggled by
+  Ctrl-O. Collapsed = preview + line count; expanded = full content.
+- **Error** — `ToolResult.IsError` flips the icon ✓ → ✗ and tints the result.
+- **Parallel mode** — when multiple tool calls run in parallel, each
+  call shows its own progress.
 
-## Active content vs scrollback — same renderer, two consumers
-
-The active-content zone (mid-screen, repainted every Update) and the
-scrollback (above, written via `tea.Println`) both use
-`RenderMessageAt`. The difference is **which range of messages they
-render**:
+The pairing between an assistant's tool calls and their result messages
+is precomputed by `PrecomputeInlinedResults(messages)` and lives on
+`RenderContext.InlinedResults`. Three lookups consume it:
 
 ```
-m.conv.Messages = [ msg0, msg1, msg2, msg3, msg4, msg5 ]
-                                          ▲
-                                          CommittedCount=4
+InlinedResults.ownerOf(resultIdx)      // which assistant owns this result?
+                                        // used by RenderMessageRange to skip
+                                        // the result (it's drawn inline)
 
-scrollback (already written):     msg0, msg1, msg2, msg3
-active content (View repaints):   msg4, msg5    +  spinner if any
-                                  ──────────
-                                  if msg5 is a streaming assistant
-                                  msg, RenderMessageRange passes
-                                  isStreaming=true so the renderer
-                                  shows a cursor and skips the
-                                  "done" suffix.
+InlinedResults.resultsFor(assistantIdx) // (callID → ToolResultData) for an
+                                        // assistant; used by
+                                        // renderAssistantWithTools
+
+InlinedResults.IsResultInlined(idx)     // is this result already going to
+                                        // be drawn under its owner?
+                                        // used by RenderSingleMessage to
+                                        // skip standalone Println
 ```
 
-`CommitMessages` advances `CommittedCount` and emits one
-`tea.Println` for each newly-committed message — so the very same
-rendered string moves from "active content" into "scrollback" once
-the message finishes streaming. The user sees a single visual
-transition, not a duplicate.
+One pass over the message list, three consumers, zero re-scanning.
 
 ## Worked example: streaming reply + tool call
 
-Concrete trace of one path through the rendering pipeline. The user
-typed `list files` and pressed Enter; that part is the input flow
-([data-flow.md](data-flow.md) Path A). Below picks up at the moment
-the agent goroutine starts emitting events.
+End-to-end trace. The user typed `list files` and pressed Enter; that
+part is the input flow ([data-flow.md](data-flow.md) Path A). Below
+picks up at the moment the agent goroutine starts emitting events.
 
 `conv.Messages` starts as `[user "list files"]` with
-`CommittedCount=1` (the user message was already committed to
-scrollback by the prior Enter handler).
+`CommittedCount=1` (the user message was already committed by the
+Enter handler).
 
 ### Step 1 — PreInfer: open an empty assistant stub
 
@@ -218,7 +208,7 @@ View → renderNormalView
      → conv.RenderActiveContent(ctx)
        ctx.InlinedResults = PrecomputeInlinedResults(Messages)
          = {} (no ToolCalls anywhere yet)
-       → RenderMessageRange(ctx, 1, 2, includeSpinner=true)
+       → RenderMessageRange(ctx, startIdx=1, endIdx=2, includeSpinner=true)
          i=1: ownerOf(1) = -1 (not a result) → don't skip
               isStreaming = (1 == lastIdx && Stream.Active && role==assistant)
                           = true
@@ -242,12 +232,10 @@ conv.Messages:   [user, assistant{Content:"I'll list them with ls."}]
 Stream.Active:   still true (Done=false)
 ```
 
-View() repaints. The same call chain as Step 1, but now
-`RenderAssistantMessage` sees non-empty content; `MDRenderer.Render`
-styles it. Repaint zone shows `● I'll list them with ls. ▮ ⋯`.
-
-A handful more OnChunks may arrive; each is an `AppendToLast` plus a
-View() repaint.
+Same call chain as Step 1, but `RenderAssistantMessage` now has
+non-empty content and `MDRenderer.Render` styles it. Repaint zone:
+`● I'll list them with ls. ▮ ⋯`. More OnChunks may follow — each is
+`AppendToLast` + a View() repaint.
 
 ### Step 3 — PostInfer: tool calls land on the assistant message
 
@@ -258,26 +246,24 @@ applyPostInfer:  rt.OnTokenUsage(resp)
                  m.Tool.Track(resp.ToolCalls)
 
 conv.Messages:   [user,
-                  assistant{Content:"I'll list them...", ToolCalls:[tc-1]}]
+                  assistant{Content:"I'll list them with ls.", ToolCalls:[tc-1]}]
 ```
 
-View() repaints. Now `renderAssistantWithTools` takes its second
-branch:
+`renderAssistantWithTools` now takes the second branch:
 
 ```
-renderAssistantWithTools(ctx, msg, 1, isLast=true)
-  base = RenderAssistantMessage(...)                 ← the text part
-  msg.ToolCalls != nil
-  resultMap = ctx.InlinedResults.resultsFor(1)
-            = nil                                     ← tc-1 hasn't finished yet
-  RenderToolCalls(ToolCallsParams{
-    ToolCalls: [tc-1],
-    ResultMap: {},                                    ← nil → empty map
-    PendingCalls: [tc-1],                             ← spinner driver
-    CurrentIdx: 0,
-    SpinnerView: "⋯",
-    ...
-  })
+base = RenderAssistantMessage(...)             ← the text part
+msg.ToolCalls != nil
+resultMap = ctx.InlinedResults.resultsFor(1)
+          = nil                                 ← tc-1 hasn't finished
+RenderToolCalls(ToolCallsParams{
+  ToolCalls:    [tc-1],
+  ResultMap:    {},                             ← nil → empty
+  PendingCalls: [tc-1],                         ← spinner driver
+  CurrentIdx:   0,
+  SpinnerView:  "⋯",
+  ...
+})
 ```
 
 Repaint zone now shows:
@@ -298,33 +284,30 @@ m.ProcessToolResult(tr):
 
 conv.Messages:   [user "list files",
                   assistant{Content+ToolCalls:[tc-1]},
-                  user{ToolResult: {ToolCallID:"tc-1", Content:"file1\nfile2"}}]
+                  user{ToolResult:{ToolCallID:"tc-1", Content:"file1\nfile2"}}]
 ```
 
-View() rebuilds the render context. **This is where InlinedResults
-earns its keep:**
+View() rebuilds `ctx`. **InlinedResults earns its keep:**
 
 ```
 PrecomputeInlinedResults(Messages):
-  i=1 is an assistant with ToolCalls [tc-1]
-  scan forward:
-    j=2: ToolResult with ToolCallID=tc-1, owned → pair
-  resultOwner          = {2: 1}
-  resultsForAssistant  = {1: {"tc-1": ToolResultData{Content:"file1\nfile2", ...}}}
+  i=1 is an assistant with ToolCalls [tc-1]; scan forward:
+    j=2: ToolResult.ToolCallID == "tc-1" → pair
+  resultOwner         = {2: 1}
+  resultsForAssistant = {1: {"tc-1": ToolResultData{Content:"file1\nfile2", ...}}}
 
 RenderMessageRange(ctx, 1, 3, includeSpinner=true):
   i=1 (assistant):
     ownerOf(1) = -1 (not a result) → render
     renderAssistantWithTools:
-      resultMap = resultsFor(1) = {"tc-1": ToolResultData{...}}   ← now populated
+      resultMap = resultsFor(1) = {"tc-1": ToolResultData{...}}    ← populated now
       RenderToolCalls draws "● Bash(ls)" with the file listing INLINE below
   i=2 (ToolResult):
     ownerOf(2) = 1, which is >= startIdx → SKIP
-    (the result is already drawn under its owning assistant; rendering
-     it standalone would duplicate)
+    (already drawn under its owning assistant; standalone render would duplicate)
 ```
 
-Repaint zone now shows:
+Repaint zone:
 
 ```
 ● I'll list them with ls.
@@ -333,7 +316,7 @@ Repaint zone now shows:
          file2
 ```
 
-### Step 5 — Final OnChunk + commit to scrollback
+### Step 5 — OnChunk(Done): promote the block to scrollback
 
 ```
 event:           core.OnChunk{Done: true, Response: {...}}
@@ -351,52 +334,54 @@ for i in CommittedCount..len(Messages):    // i = 1, 2
   if checkReady && i == lastIdx && role==assistant && Stream.Active:
       break                                  // but Stream.Active is now false
   rendered = conv.RenderSingleMessage(ctx, i)
-    i=1: RenderMessageAt(ctx, 1, false)      // not streaming → no cursor
-         returns the same assistant+tool block as before
+    i=1: RenderMessageAt(ctx, 1, false)      // no longer streaming → no cursor
+         returns the same assistant + tool block as before
     i=2: msg.ToolResult != nil
-         InlinedResults.IsResultInlined(2) = true → return ""    ← skipped
+         InlinedResults.IsResultInlined(2) = true → return ""       ← skipped
   if rendered != "": append to parts
 
-tea.Println(strings.Join(parts, "\n"))       // ONE Println, one block
+tea.Println(strings.Join(parts, "\n"))       // ONE Println, ONE block
 CommittedCount = 3                           // caught up
 ```
 
-Effect on the screen:
+What changed on screen:
 
-- **Native scrollback** gains one new block: `● I'll list them with ls. / ● Bash(ls) / ⎿ file1 / file2`. Frozen there until terminal cleared.
-- **Repaint zone** is now empty (CommittedCount equals len(Messages)).
-- Next View() call paints just the input strip — ready for the next user prompt.
+- **Scrollback** gains one block:
+  `● I'll list them with ls. / ● Bash(ls) / ⎿ file1 / file2`. Frozen.
+- **Repaint zone** is now empty (`CommittedCount == len(Messages)`).
+- The next `View()` paints just the input strip — ready for the next
+  user prompt.
 
-The same rendered string that the user was watching grow in the
-repaint zone is now living in scrollback, written exactly once via
-`tea.Println`. The `IsResultInlined` short-circuit in
-`RenderSingleMessage` is what stops the ToolResult from also being
-Println'd standalone.
+The user watched the same string grow in the repaint zone; now that
+same string lives in scrollback, written exactly once. The
+`IsResultInlined` short-circuit in `RenderSingleMessage` is what stops
+the ToolResult from also being Println'd standalone.
 
 ## Resize behavior
 
-Terminal resize is the only event that invalidates already-painted
-scrollback (because glamour wrapping is width-specific).
-`handleWindowResize` in `internal/app/update_resize.go`:
+Terminal resize is the **only event that invalidates already-painted
+scrollback** (glamour wraps at its configured width). `handleWindowResize`
+in [`internal/app/update_resize.go`](../../internal/app/update_resize.go):
 
-1. Updates `m.env.Width / Height` and the textarea width.
-2. Calls `m.conv.ResizeMDRenderer(newWidth)` to rebuild glamour.
+1. Update `m.env.Width / Height` and the textarea width.
+2. `m.conv.ResizeMDRenderer(newWidth)` — rebuilds glamour at the new
+   width.
 3. If width actually changed and any messages are committed:
-   `reflowScrollback` clears the screen and re-Printlns every
-   committed message at the new width.
-4. Returns the cmd; bubbletea calls View() to repaint the new bottom
-   strip at the new width.
+   `reflowScrollback` clears the screen and re-Printlns every committed
+   message at the new width.
+4. Bubble Tea calls `View()` next to repaint the bottom strip at the
+   new width.
 
 ## File pointers
 
 | Concern | File |
 | --- | --- |
 | `View()` composition | [`internal/app/view.go`](../../internal/app/view.go) |
-| Per-message rendering | [`internal/app/conv/view.go`](../../internal/app/conv/view.go) |
+| Per-message rendering + pairing | [`internal/app/conv/view.go`](../../internal/app/conv/view.go) |
 | User / assistant / notice rendering | [`internal/app/conv/message.go`](../../internal/app/conv/message.go) |
 | Markdown rendering | [`internal/app/conv/markdown.go`](../../internal/app/conv/markdown.go) |
 | Tool call / result rendering | [`internal/app/conv/tool_render.go`](../../internal/app/conv/tool_render.go) |
-| Compact / progress / tracker rendering | [`internal/app/conv/compact.go`](../../internal/app/conv/compact.go), [`progress.go`](../../internal/app/conv/progress.go), [`tracker_view.go`](../../internal/app/conv/tracker_view.go) |
+| Compact / progress / tracker | [`internal/app/conv/compact.go`](../../internal/app/conv/compact.go), [`progress.go`](../../internal/app/conv/progress.go), [`tracker_view.go`](../../internal/app/conv/tracker_view.go) |
 | `MDRenderer` lifecycle | [`internal/app/conv/model.go`](../../internal/app/conv/model.go) |
 | Scrollback commit | [`internal/app/model_scrollback.go`](../../internal/app/model_scrollback.go) |
 | Resize + reflow | [`internal/app/update_resize.go`](../../internal/app/update_resize.go) |
