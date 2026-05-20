@@ -160,6 +160,185 @@ scrollback（已写好）：       msg0, msg1, msg2, msg3
 发一次 `tea.Println`——同一段渲染出的字符串就从"活动内容"**搬**进了
 "scrollback"。用户看到的是一次视觉过渡，不是重复显示。
 
+## 实例走查：流式回复 + 工具调用
+
+走一遍完整路径。用户敲了 `list files` 并按 Enter——那一段是输入流
+（[data-flow.zh.md](data-flow.zh.md) Path A）；下面从 agent goroutine
+开始往 Outbox 发事件的那一刻接着往下讲。
+
+起点：`conv.Messages` 是 `[user "list files"]`，`CommittedCount=1`
+（上一轮 Enter 把 user message commit 到 scrollback 了）。
+
+### Step 1 — PreInfer：开一个空的 assistant 桩位
+
+```
+event:           core.PreInfer
+applyPreInfer:   rt.OnTurnBegin()
+                 m.Stream.Active = true
+                 m.Append({Role: assistant, Content: ""})
+                 启动 spinner
+
+conv.Messages:   [user, assistant{Content:""}]
+CommittedCount:  1   （只有 user 是已 commit）
+```
+
+这次 Update 之后 View() 跑：
+
+```
+View → renderNormalView
+     → conv.RenderActiveContent(ctx)
+       ctx.InlinedResults = PrecomputeInlinedResults(Messages)
+         = {} （还没有 ToolCalls）
+       → RenderMessageRange(ctx, 1, 2, includeSpinner=true)
+         i=1: ownerOf(1) = -1（不是 result）→ 不跳过
+              isStreaming = (1 == lastIdx && Stream.Active && role==assistant)
+                          = true
+              → RenderMessageAt(ctx, 1, isStreaming=true)
+                → renderAssistantWithTools(ctx, msg, 1, isLast=true)
+                  → RenderAssistantMessage(content="", streamActive=true,...)
+                    返回 "● ▮" 这种桩位
+                  msg.ToolCalls == nil → 直接返回 base
+         + 还有 pending-tool spinner
+```
+
+重绘区显示 `● ▮ ⋯`。Scrollback 不动。
+
+### Step 2 — OnChunk（文字）：消息变长
+
+```
+event:           core.OnChunk{Text: "我用 ls 列一下。", Done: false}
+applyChunk:      m.AppendToLast(text, "")
+
+conv.Messages:   [user, assistant{Content:"我用 ls 列一下。"}]
+Stream.Active:   still true（Done=false）
+```
+
+View() 重画。和 Step 1 同样的调用链，但这次 `RenderAssistantMessage`
+看到非空内容；`MDRenderer.Render` 给它上 style。重绘区显示
+`● 我用 ls 列一下。 ▮ ⋯`。
+
+后面还会来几个 OnChunk，每个都是 `AppendToLast` + 一次 View() 重画。
+
+### Step 3 — PostInfer：工具调用挂到 assistant 消息上
+
+```
+event:           core.PostInfer{Response: {ToolCalls: [{ID:"tc-1", Name:"Bash", Input:{cmd:"ls"}}]}}
+applyPostInfer:  rt.OnTokenUsage(resp)
+                 m.SetLastToolCalls(resp.ToolCalls)
+                 m.Tool.Track(resp.ToolCalls)
+
+conv.Messages:   [user,
+                  assistant{Content:"我用 ls 列一下。", ToolCalls:[tc-1]}]
+```
+
+View() 重画。这次 `renderAssistantWithTools` 走 ToolCalls 那条分支：
+
+```
+renderAssistantWithTools(ctx, msg, 1, isLast=true)
+  base = RenderAssistantMessage(...)                ← 文本部分
+  msg.ToolCalls != nil
+  resultMap = ctx.InlinedResults.resultsFor(1)
+            = nil                                    ← tc-1 还没出结果
+  RenderToolCalls(ToolCallsParams{
+    ToolCalls: [tc-1],
+    ResultMap: {},                                   ← nil → 空 map
+    PendingCalls: [tc-1],                            ← 驱动 spinner
+    CurrentIdx: 0,
+    SpinnerView: "⋯",
+    ...
+  })
+```
+
+重绘区现在显示：
+
+```
+● 我用 ls 列一下。
+  ⋯ Bash(ls)
+```
+
+### Step 4 — PostTool：结果到了，配对 inline
+
+```
+event:           core.PostTool{Result: {ToolCallID:"tc-1", Content:"file1\nfile2"}}
+m.ProcessToolResult(tr):
+  applyToolSideEffects(...)
+  firePostToolHook(...)
+  （agent 把 ToolResult 作为 user-role message append 进来）
+
+conv.Messages:   [user "list files",
+                  assistant{Content+ToolCalls:[tc-1]},
+                  user{ToolResult: {ToolCallID:"tc-1", Content:"file1\nfile2"}}]
+```
+
+View() 重建 render context。**InlinedResults 在这里发挥作用：**
+
+```
+PrecomputeInlinedResults(Messages):
+  i=1 是 assistant，ToolCalls=[tc-1]
+  往后扫:
+    j=2: ToolResult.ToolCallID=tc-1，owned → 配对
+  resultOwner          = {2: 1}
+  resultsForAssistant  = {1: {"tc-1": ToolResultData{Content:"file1\nfile2", ...}}}
+
+RenderMessageRange(ctx, 1, 3, includeSpinner=true):
+  i=1（assistant）:
+    ownerOf(1) = -1（不是 result）→ 渲染
+    renderAssistantWithTools:
+      resultMap = resultsFor(1) = {"tc-1": ToolResultData{...}}   ← 现在有了
+      RenderToolCalls 把 "● Bash(ls)" 画出来，结果 inline 在下面
+  i=2（ToolResult）:
+    ownerOf(2) = 1，>= startIdx → SKIP
+    （result 已经在 assistant 块里画过了；单独再画一次就是重复）
+```
+
+重绘区现在显示：
+
+```
+● 我用 ls 列一下。
+  ● Bash(ls)
+      ⎿  file1
+         file2
+```
+
+### Step 5 — 最后的 OnChunk + commit 进 scrollback
+
+```
+event:           core.OnChunk{Done: true, Response: {...}}
+applyChunk:      m.AppendToLast(...)       （可能还有最后一段文字 chunk）
+                 if chunk.Done && 没有未完成的工具调用:
+                     m.Stream.Active = false
+                     return rt.CommitMessages()
+```
+
+`CommitMessages → renderAndCommit(checkReady=true)`：
+
+```
+for i in CommittedCount..len(Messages):    // i = 1, 2
+  msg = Messages[i]
+  if checkReady && i == lastIdx && role==assistant && Stream.Active:
+      break                                  // 但 Stream.Active 已经是 false
+  rendered = conv.RenderSingleMessage(ctx, i)
+    i=1: RenderMessageAt(ctx, 1, false)      // 不再 streaming → 不画光标
+         返回和 Step 4 同样的 assistant + 工具块
+    i=2: msg.ToolResult != nil
+         InlinedResults.IsResultInlined(2) = true → return ""    ← 跳过
+  if rendered != "": 加到 parts
+
+tea.Println(strings.Join(parts, "\n"))       // 一次 Println，一整块
+CommittedCount = 3                           // 追上
+```
+
+屏幕上的效果：
+
+- **原生 scrollback** 多出一整块：`● 我用 ls 列一下。 / ● Bash(ls) / ⎿ file1 / file2`。冻在那儿直到终端清屏。
+- **重绘区** 现在空了（CommittedCount 等于 len(Messages)）。
+- 下一次 View() 只画底部输入条——等下一条用户消息。
+
+刚才用户看到一直在增长的同一段字符，现在原原本本住进了 scrollback——通过
+**一次** `tea.Println` 写过去的。`RenderSingleMessage` 里
+`IsResultInlined` 的 short-circuit 是阻止 ToolResult 被独立 Println 一遍的
+关键。
+
 ## Resize 行为
 
 终端 resize 是唯一会让**已经画到 scrollback 里的内容失效**的事件

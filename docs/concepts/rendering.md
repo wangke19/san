@@ -179,6 +179,192 @@ rendered string moves from "active content" into "scrollback" once
 the message finishes streaming. The user sees a single visual
 transition, not a duplicate.
 
+## Worked example: streaming reply + tool call
+
+Concrete trace of one path through the rendering pipeline. The user
+typed `list files` and pressed Enter; that part is the input flow
+([data-flow.md](data-flow.md) Path A). Below picks up at the moment
+the agent goroutine starts emitting events.
+
+`conv.Messages` starts as `[user "list files"]` with
+`CommittedCount=1` (the user message was already committed to
+scrollback by the prior Enter handler).
+
+### Step 1 — PreInfer: open an empty assistant stub
+
+```
+event:           core.PreInfer
+applyPreInfer:   rt.OnTurnBegin()
+                 m.Stream.Active = true
+                 m.Append({Role: assistant, Content: ""})
+                 start spinner
+
+conv.Messages:   [user, assistant{Content:""}]
+CommittedCount:  1   (only user is committed so far)
+```
+
+View() runs after this Update:
+
+```
+View → renderNormalView
+     → conv.RenderActiveContent(ctx)
+       ctx.InlinedResults = PrecomputeInlinedResults(Messages)
+         = {} (no ToolCalls anywhere yet)
+       → RenderMessageRange(ctx, 1, 2, includeSpinner=true)
+         i=1: ownerOf(1) = -1 (not a result) → don't skip
+              isStreaming = (1 == lastIdx && Stream.Active && role==assistant)
+                          = true
+              → RenderMessageAt(ctx, 1, isStreaming=true)
+                → renderAssistantWithTools(ctx, msg, 1, isLast=true)
+                  → RenderAssistantMessage(content="", streamActive=true,...)
+                    returns the "● ▮" stub
+                  msg.ToolCalls == nil → just return base
+         + pending-tool spinner
+```
+
+Repaint zone shows `● ▮ ⋯`. Scrollback unchanged.
+
+### Step 2 — OnChunk (text): grow the message
+
+```
+event:           core.OnChunk{Text: "I'll list them with ls.", Done: false}
+applyChunk:      m.AppendToLast(text, "")
+
+conv.Messages:   [user, assistant{Content:"I'll list them with ls."}]
+Stream.Active:   still true (Done=false)
+```
+
+View() repaints. The same call chain as Step 1, but now
+`RenderAssistantMessage` sees non-empty content; `MDRenderer.Render`
+styles it. Repaint zone shows `● I'll list them with ls. ▮ ⋯`.
+
+A handful more OnChunks may arrive; each is an `AppendToLast` plus a
+View() repaint.
+
+### Step 3 — PostInfer: tool calls land on the assistant message
+
+```
+event:           core.PostInfer{Response: {ToolCalls: [{ID:"tc-1", Name:"Bash", Input:{cmd:"ls"}}]}}
+applyPostInfer:  rt.OnTokenUsage(resp)
+                 m.SetLastToolCalls(resp.ToolCalls)
+                 m.Tool.Track(resp.ToolCalls)
+
+conv.Messages:   [user,
+                  assistant{Content:"I'll list them...", ToolCalls:[tc-1]}]
+```
+
+View() repaints. Now `renderAssistantWithTools` takes its second
+branch:
+
+```
+renderAssistantWithTools(ctx, msg, 1, isLast=true)
+  base = RenderAssistantMessage(...)                 ← the text part
+  msg.ToolCalls != nil
+  resultMap = ctx.InlinedResults.resultsFor(1)
+            = nil                                     ← tc-1 hasn't finished yet
+  RenderToolCalls(ToolCallsParams{
+    ToolCalls: [tc-1],
+    ResultMap: {},                                    ← nil → empty map
+    PendingCalls: [tc-1],                             ← spinner driver
+    CurrentIdx: 0,
+    SpinnerView: "⋯",
+    ...
+  })
+```
+
+Repaint zone now shows:
+
+```
+● I'll list them with ls.
+  ⋯ Bash(ls)
+```
+
+### Step 4 — PostTool: result arrives, gets inlined
+
+```
+event:           core.PostTool{Result: {ToolCallID:"tc-1", Content:"file1\nfile2"}}
+m.ProcessToolResult(tr):
+  applyToolSideEffects(...)
+  firePostToolHook(...)
+  (the agent appends the ToolResult as a user-role message)
+
+conv.Messages:   [user "list files",
+                  assistant{Content+ToolCalls:[tc-1]},
+                  user{ToolResult: {ToolCallID:"tc-1", Content:"file1\nfile2"}}]
+```
+
+View() rebuilds the render context. **This is where InlinedResults
+earns its keep:**
+
+```
+PrecomputeInlinedResults(Messages):
+  i=1 is an assistant with ToolCalls [tc-1]
+  scan forward:
+    j=2: ToolResult with ToolCallID=tc-1, owned → pair
+  resultOwner          = {2: 1}
+  resultsForAssistant  = {1: {"tc-1": ToolResultData{Content:"file1\nfile2", ...}}}
+
+RenderMessageRange(ctx, 1, 3, includeSpinner=true):
+  i=1 (assistant):
+    ownerOf(1) = -1 (not a result) → render
+    renderAssistantWithTools:
+      resultMap = resultsFor(1) = {"tc-1": ToolResultData{...}}   ← now populated
+      RenderToolCalls draws "● Bash(ls)" with the file listing INLINE below
+  i=2 (ToolResult):
+    ownerOf(2) = 1, which is >= startIdx → SKIP
+    (the result is already drawn under its owning assistant; rendering
+     it standalone would duplicate)
+```
+
+Repaint zone now shows:
+
+```
+● I'll list them with ls.
+  ● Bash(ls)
+      ⎿  file1
+         file2
+```
+
+### Step 5 — Final OnChunk + commit to scrollback
+
+```
+event:           core.OnChunk{Done: true, Response: {...}}
+applyChunk:      m.AppendToLast(...)       (possibly a final text chunk)
+                 if chunk.Done && no tool calls remaining:
+                     m.Stream.Active = false
+                     return rt.CommitMessages()
+```
+
+`CommitMessages → renderAndCommit(checkReady=true)`:
+
+```
+for i in CommittedCount..len(Messages):    // i = 1, 2
+  msg = Messages[i]
+  if checkReady && i == lastIdx && role==assistant && Stream.Active:
+      break                                  // but Stream.Active is now false
+  rendered = conv.RenderSingleMessage(ctx, i)
+    i=1: RenderMessageAt(ctx, 1, false)      // not streaming → no cursor
+         returns the same assistant+tool block as before
+    i=2: msg.ToolResult != nil
+         InlinedResults.IsResultInlined(2) = true → return ""    ← skipped
+  if rendered != "": append to parts
+
+tea.Println(strings.Join(parts, "\n"))       // ONE Println, one block
+CommittedCount = 3                           // caught up
+```
+
+Effect on the screen:
+
+- **Native scrollback** gains one new block: `● I'll list them with ls. / ● Bash(ls) / ⎿ file1 / file2`. Frozen there until terminal cleared.
+- **Repaint zone** is now empty (CommittedCount equals len(Messages)).
+- Next View() call paints just the input strip — ready for the next user prompt.
+
+The same rendered string that the user was watching grow in the
+repaint zone is now living in scrollback, written exactly once via
+`tea.Println`. The `IsResultInlined` short-circuit in
+`RenderSingleMessage` is what stops the ToolResult from also being
+Println'd standalone.
+
 ## Resize behavior
 
 Terminal resize is the only event that invalidates already-painted
