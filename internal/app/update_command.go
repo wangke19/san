@@ -35,7 +35,7 @@ func (m *model) slashCommandEnv() input.SlashCommandEnv {
 
 		// Env callbacks
 		GetThinkingEffort: func() string { return m.env.EffectiveThinkingEffort() },
-		SetThinkingEffort: func(effort string) { m.env.ThinkingEffort = effort },
+		SetThinkingEffort: m.env.SetThinkingEffort,
 		ResetTokens:       m.env.ResetTokens,
 
 		// Model actions

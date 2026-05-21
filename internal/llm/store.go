@@ -43,11 +43,12 @@ type tokenLimitOverride struct {
 
 // storeData is the persisted data structure
 type storeData struct {
-	Connections    map[string]ConnectionInfo     `json:"connections"`              // key: provider
-	Models         map[string]modelCache         `json:"models"`                   // key: provider:authMethod
-	Current        *CurrentModelInfo             `json:"current"`                  // current model with provider info
-	SearchProvider *string                       `json:"searchProvider,omitempty"` // search provider name (exa, serper, brave)
-	TokenLimits    map[string]tokenLimitOverride `json:"tokenLimits,omitempty"`    // key: modelID
+	Connections     map[string]ConnectionInfo     `json:"connections"`               // key: provider
+	Models          map[string]modelCache         `json:"models"`                    // key: provider:authMethod
+	Current         *CurrentModelInfo             `json:"current"`                   // current model with provider info
+	SearchProvider  *string                       `json:"searchProvider,omitempty"`  // search provider name (exa, serper, brave)
+	TokenLimits     map[string]tokenLimitOverride `json:"tokenLimits,omitempty"`     // key: modelID
+	ThinkingEfforts map[string]string             `json:"thinkingEfforts,omitempty"` // key: modelID; value: provider-native effort label
 }
 
 // Store manages provider configuration persistence
@@ -114,6 +115,9 @@ func (s *Store) ensureMapsInitialized() {
 	}
 	if s.data.TokenLimits == nil {
 		s.data.TokenLimits = make(map[string]tokenLimitOverride)
+	}
+	if s.data.ThinkingEfforts == nil {
+		s.data.ThinkingEfforts = make(map[string]string)
 	}
 }
 
@@ -322,6 +326,29 @@ func (s *Store) SetTokenLimit(modelID string, inputLimit, outputLimit int) error
 		s.data.Models[key] = cache
 	}
 
+	return s.save()
+}
+
+// GetThinkingEffort returns the persisted thinking effort for modelID,
+// or "" when no preference has been saved (fall back to provider default).
+func (s *Store) GetThinkingEffort(modelID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data.ThinkingEfforts[modelID]
+}
+
+// SetThinkingEffort saves the thinking effort for modelID.
+// Passing "" deletes the entry so future loads fall back to the provider default.
+func (s *Store) SetThinkingEffort(modelID, effort string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ensureMapsInitialized()
+	if effort == "" {
+		delete(s.data.ThinkingEfforts, modelID)
+	} else {
+		s.data.ThinkingEfforts[modelID] = effort
+	}
 	return s.save()
 }
 

@@ -5,8 +5,11 @@ package app
 import (
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/genai-io/gen-code/internal/filecache"
 	"github.com/genai-io/gen-code/internal/llm"
+	"github.com/genai-io/gen-code/internal/log"
 	"github.com/genai-io/gen-code/internal/setting"
 )
 
@@ -45,10 +48,15 @@ type env struct {
 	FileCache                 *filecache.Cache
 	CachedUserInstructions    string
 	CachedProjectInstructions string
+
+	// ── Persistence handle (per-model thinking effort, etc.) ────
+	// Held as a field so env-level setters can write through without
+	// reaching for package globals; nil-safe in tests that bypass newEnv.
+	store *llm.Store
 }
 
 func newEnv(llmSvc *llm.ClientFactory, cwd string, isGit bool) env {
-	return env{
+	e := env{
 		CWD:   cwd,
 		IsGit: isGit,
 
@@ -59,7 +67,42 @@ func newEnv(llmSvc *llm.ClientFactory, cwd string, isGit bool) env {
 		CurrentModel: llmSvc.CurrentModel(),
 
 		FileCache: filecache.New(),
+		store:     llmSvc.Store(),
 	}
+	// Restore the user's prior per-model thinking-effort choice. Empty
+	// means "use provider default" — EffectiveThinkingEffort handles that.
+	if e.store != nil && e.CurrentModel != nil {
+		e.ThinkingEffort = e.store.GetThinkingEffort(e.CurrentModel.ModelID)
+	}
+	return e
+}
+
+// SetThinkingEffort updates the in-memory thinking-effort selection and
+// persists it for the current model. Call this for explicit user choices
+// (Ctrl+T, /think); keyword-driven auto-bumps stay in-memory only, so a
+// stray "ultrathink" in a prompt doesn't lock the model into the top tier.
+func (m *env) SetThinkingEffort(effort string) {
+	m.ThinkingEffort = effort
+	if m.store == nil || m.CurrentModel == nil {
+		return
+	}
+	if err := m.store.SetThinkingEffort(m.CurrentModel.ModelID, effort); err != nil {
+		log.Logger().Warn("persist thinking effort",
+			zap.String("model", m.CurrentModel.ModelID),
+			zap.String("effort", effort),
+			zap.Error(err))
+	}
+}
+
+// LoadThinkingEffortFromStore refreshes ThinkingEffort from the persisted
+// per-model preference. Called after switching models so each model recalls
+// its own last-chosen effort.
+func (m *env) LoadThinkingEffortFromStore() {
+	if m.store == nil || m.CurrentModel == nil {
+		m.ThinkingEffort = ""
+		return
+	}
+	m.ThinkingEffort = m.store.GetThinkingEffort(m.CurrentModel.ModelID)
 }
 
 func (m *env) GetModelID() string {

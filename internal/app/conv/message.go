@@ -182,7 +182,8 @@ func RenderThinkingIndicator(effort string) string {
 		return ""
 	}
 	style := lipgloss.NewStyle().Foreground(kit.CurrentTheme.Accent)
-	return "  " + style.Render("✦ "+effort)
+	hint := lipgloss.NewStyle().Foreground(kit.CurrentTheme.Muted).Render(" (ctrl+t to cycle)")
+	return "  " + style.Render("✦ "+effort) + hint
 }
 
 // toolResultIcon returns the icon for tool results based on error state.
