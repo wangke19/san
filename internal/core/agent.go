@@ -80,6 +80,13 @@ type Agent interface {
 	//
 	// Signals (SigStop) are checked at every phase boundary.
 	Run(ctx context.Context) error
+
+	// InterruptCurrentTurn cancels the in-flight ThinkAct without ending
+	// Run. After interruption the run loop returns to waitForInput and
+	// resumes normally on the next inbox message. No-op if no turn is in
+	// flight. Use this for user-initiated mid-stream cancellation; use
+	// SigStop / ctx cancel for full shutdown.
+	InterruptCurrentTurn()
 }
 
 // Config holds construction parameters for an agent.

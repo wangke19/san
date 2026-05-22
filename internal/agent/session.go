@@ -83,6 +83,34 @@ func (s *Task) Send(content string, images []core.Image) {
 	ag.Inbox() <- core.Message{Role: core.RoleUser, Content: content, Images: images}
 }
 
+// InterruptTurn cancels the agent's in-flight turn without ending its
+// Run loop. After interruption the agent goes back to waiting on the
+// inbox, so subsequent Send calls resume the session in place — no
+// rebuild, no Stop/Start event pair. No-op if no agent is active.
+func (s *Task) InterruptTurn() {
+	s.mu.RLock()
+	ag := s.agent
+	s.mu.RUnlock()
+	if ag == nil {
+		return
+	}
+	ag.InterruptCurrentTurn()
+}
+
+// ResyncMessages replaces the running agent's conversation history with
+// the provided snapshot. Used after InterruptTurn to reconcile the
+// agent with UI-side bookkeeping (cancelled tool results, interrupt
+// markers) added by the cancel handler. No-op if no agent is active.
+func (s *Task) ResyncMessages(msgs []core.Message) {
+	s.mu.RLock()
+	ag := s.agent
+	s.mu.RUnlock()
+	if ag == nil {
+		return
+	}
+	ag.SetMessages(msgs)
+}
+
 func (s *Task) Outbox() <-chan core.Event {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -13,13 +13,24 @@ import (
 )
 
 func (m *model) handleStreamCancel() tea.Cmd {
-	m.services.Agent.Stop()
+	// InterruptTurn cancels just the in-flight ThinkAct — Run loop keeps
+	// going and will pick up the next Send from inbox. The earlier code
+	// called Stop here, which tore the agent down and forced a full
+	// rebuild (and a Stop/Start event pair in the session) on the next
+	// message.
+	m.services.Agent.InterruptTurn()
 	m.conv.Stream.Stop()
 	m.conv.ProgressHub.DrainPendingQuestions()
 	m.conv.Modal.Question.Hide()
 	m.cancelPendingToolCalls()
 	m.conv.MarkLastInterrupted()
 	m.conv.AppendInterruptedByUserMarker()
+
+	// Reconcile the agent's history with the cancellation bookkeeping
+	// just written into conv (cancelled tool results, interrupt marker,
+	// "[Interrupted]" suffix). Without this the next inference would
+	// fire against a stale snapshot.
+	m.services.Agent.ResyncMessages(m.conv.ConvertToProvider())
 
 	cmds := m.CommitMessages()
 	if cmd := m.drainInputQueueAfterCancel(); cmd != nil {

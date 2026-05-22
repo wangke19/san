@@ -34,6 +34,11 @@ type agent struct {
 	messages []Message // conversation history
 
 	closed atomic.Bool // guards outbox writes after close
+
+	// turnCancel cancels the ctx of the in-flight ThinkAct without ending
+	// Run. Stored as a pointer so swap-with-nil acts as an atomic claim
+	// — concurrent InterruptCurrentTurn calls become no-ops.
+	turnCancel atomic.Pointer[context.CancelFunc]
 }
 
 type agentToolTask struct {
@@ -67,6 +72,10 @@ func (a *agent) Append(ctx context.Context, msg Message) {
 
 // Run is the agent's main loop: wait for input → think+act → repeat.
 // Outbox is closed when Run returns. Inbox is NOT closed (caller owns it).
+//
+// Each ThinkAct call runs under a per-turn ctx derived from Run's ctx so
+// InterruptCurrentTurn can cancel the in-flight turn without ending the
+// loop. Parent-ctx cancellation still ends Run.
 func (a *agent) Run(ctx context.Context) error {
 	a.emit(ctx, StartEvent(a.id))
 
@@ -95,7 +104,17 @@ func (a *agent) Run(ctx context.Context) error {
 
 		for {
 			glog.QueueLog("agent.Run: starting ThinkAct")
-			result, err := a.ThinkAct(ctx)
+			turnCtx, turnCancel := context.WithCancel(ctx)
+			a.turnCancel.Store(&turnCancel)
+
+			result, err := a.ThinkAct(turnCtx)
+
+			// Detach before cancelling so a racing InterruptCurrentTurn
+			// becomes a no-op rather than cancelling the next turn.
+			if a.turnCancel.CompareAndSwap(&turnCancel, nil) {
+				turnCancel()
+			}
+
 			if result != nil {
 				glog.QueueLog("agent.Run: ThinkAct done, emitting TurnEvent")
 				a.emit(ctx, TurnEvent(a.id, *result))
@@ -104,6 +123,13 @@ func (a *agent) Run(ctx context.Context) error {
 				glog.QueueLog("agent.Run: ThinkAct error: %v", err)
 				if err == errStopped {
 					return nil
+				}
+				// Turn-only interrupt: parent ctx still alive, the turn's
+				// ctx was cancelled by InterruptCurrentTurn. Go back to
+				// waitForInput instead of tearing down Run.
+				if ctx.Err() == nil && errors.Is(err, context.Canceled) {
+					glog.QueueLog("agent.Run: turn interrupted by user, resuming wait")
+					break
 				}
 				runErr = err
 				return err
@@ -122,6 +148,15 @@ func (a *agent) Run(ctx context.Context) error {
 				break
 			}
 		}
+	}
+}
+
+// InterruptCurrentTurn cancels the ctx of the currently-running ThinkAct
+// without ending Run. After cancellation the run loop returns to
+// waitForInput. No-op if no turn is in flight.
+func (a *agent) InterruptCurrentTurn() {
+	if cancel := a.turnCancel.Swap(nil); cancel != nil {
+		(*cancel)()
 	}
 }
 
@@ -215,6 +250,12 @@ func (a *agent) ThinkAct(ctx context.Context) (*Result, error) {
 			// Reactive compaction: if prompt too long, compact and retry
 			if a.compactFunc != nil && isPromptTooLong(err) && a.compact(ctx) {
 				continue
+			}
+			// On turn cancellation, return a Result so observers see a
+			// turn boundary with StopCancelled. The error is still
+			// propagated so Run's loop can branch on it.
+			if errors.Is(err, context.Canceled) {
+				return makeResult("", StopCancelled, ""), err
 			}
 			return nil, err
 		}
