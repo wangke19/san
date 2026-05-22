@@ -568,19 +568,17 @@ follow-up user message resumes the same session via the inbox channel.
        │      │                                       ThinkAct returns
        │      │                                       close(h.done) ──┐
        │      └─ <-h.done   (≤ 250 ms)  ◀ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
-       │         agent is now quiescent — safe to mutate shared state
        │
-       │ 2. conv-side cancellation bookkeeping
+       │ 2. Reminder.Enqueue(InterruptReminder)
+       │      └─ "The previous response was interrupted by the user."
+       │         attached to the NEXT user message via the same
+       │         <system-reminder> channel skills/memory already use.
+       │
+       │ 3. conv-side UI updates (display only — never sync into agent)
        │      ├─ Stream.Stop / hide modals / drain pending questions
-       │      ├─ cancelPendingToolCalls  → appends cancelled tool_result
-       │      ├─ MarkLastInterrupted     → asst.Content += " [Interrupted]"
-       │      └─ AppendInterruptedByUserMarker
-       │                  → appends user "[Request interrupted by user]"
-       │
-       │ 3. Agent.ResyncMessages(conv.ConvertToProvider())
-       │      └─ agent.SetMessages overwrites a.messages and
-       │         emits OnAppend for IDs not in the prior snapshot
-       │         (session recorder catches up; no integrity gap)
+       │      ├─ cancelPendingToolCalls   → cancelled tool_result rows
+       │      └─ MarkLastInterrupted      → ⏸ interrupted badge on
+       │                                    the last assistant
        │
        │ 4. CommitMessages + drainInputQueueAfterCancel
        │
@@ -597,6 +595,9 @@ follow-up user message resumes the same session via the inbox channel.
    user types "do B instead"
    ──▶ SubmitToAgent
        └─ ensureAgentSession sees Active=true — NO rebuild
+       └─ sendToAgent → attachPendingReminders
+                          → "<system-reminder>The previous response
+                             was interrupted…</system-reminder>do B"
        └─ Agent.Send ──────────▶  inbox
                                   waitForInput unblocks
                                   loop top: interruptPending=false → proceed
@@ -604,13 +605,35 @@ follow-up user message resumes the same session via the inbox channel.
                                                                 ─▶ new stream
 ```
 
+### Why agent state is never touched on cancel
+
+The cancel handler does not synthesize any marker into `a.messages` and
+does not push conv state back into the agent — both layers stay on
+their own copy with their own IDs. This works because:
+
+- **Orphaned `tool_use` blocks are sanitized at convert time.** If the
+  cancel happened after `PostInfer` appended an assistant with
+  `tool_calls` but before all results came back, the next inference's
+  convert pass (anthropic `sanitizeToolResults`,
+  openaicompat `SanitizeToolMessages`) strips the unmatched
+  `tool_use` blocks before sending to the provider.
+- **Consecutive user messages are tolerated.** Anthropic's converter
+  calls `mergeConsecutiveMessages`; OpenAI / DeepSeek / Moonshot etc.
+  accept user-after-user without complaint.
+- **The interrupt signal rides the reminder.** Instead of injecting a
+  fake assistant or user turn, the cancel handler enqueues a one-shot
+  reminder body; the existing `attachPendingReminders` wraps it in a
+  `<system-reminder>` block on the very next user submission. The
+  model gets an explicit "previous turn was interrupted" cue without
+  any synthetic message in the chain.
+
 Three pieces carry the cancel safely:
 
 | Mechanism | What it protects |
 |---|---|
 | `turn atomic.Pointer[turnHandle]` | The "live turn handle" — `Swap(nil)` makes the cancel atomic so two interrupts can't double-cancel the next turn. |
 | `interruptPending atomic.Bool` | Latches an interrupt that lands between turns (when `turn` is momentarily nil), so the next iteration of Run's inner loop bails to `waitForInput` instead of running an unwanted ThinkAct. |
-| `turnHandle.done` chan + 250 ms timeout | The handshake: `Task.InterruptTurn` waits for ThinkAct to actually unwind before `ResyncMessages` mutates `a.messages`, eliminating the race against the agent goroutine's own `a.append`. The timeout is a backstop for a tool that ignores ctx; in practice the wait is sub-millisecond. |
+| `turnHandle.done` chan + 250 ms timeout | Lets the UI wait for ThinkAct to actually unwind before returning to the user — keeps spinner / modal state from racing the agent's last few ctx-cancelled emits. The timeout is a backstop for a tool that ignores ctx; in practice the wait is sub-millisecond. |
 
 Why this matters versus the pre-rewrite path: the old cancel called
 `Agent.Stop`, killed the goroutine, and rebuilt the entire agent on the

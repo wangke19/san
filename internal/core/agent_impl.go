@@ -77,74 +77,9 @@ func (a *agent) Messages() []Message   { return a.snapshot() }
 
 func (a *agent) SetMessages(msgs []Message) {
 	a.mu.Lock()
-	old := a.messages
-	known := make(map[string]struct{}, len(old))
-	for _, m := range old {
-		if m.ID != "" {
-			known[m.ID] = struct{}{}
-		}
-	}
-
-	// Reconcile IDs: conv and agent each stamp IDs independently when a
-	// message first enters their slice, so naïvely copying msgs (which
-	// carries conv's IDs) would replace agent's prior IDs with brand-new
-	// ones — recorder already has a message.appended row for the agent
-	// ID, the new row duplicates it, and the integrity check flags
-	// orphans ("N expected vs N+dup replayed"). For each new message at
-	// a position where the old slice held an equivalent one (same role,
-	// content, tool linkage), reuse the old ID so the existing record
-	// stays authoritative. Only genuinely-new messages get fresh
-	// emitAppend events.
-	out := make([]Message, len(msgs))
-	var fresh []Message
-	for i, m := range msgs {
-		if i < len(old) && messagesEquivalent(old[i], m) {
-			m.ID = old[i].ID
-		} else if m.ID != "" {
-			if _, seen := known[m.ID]; !seen {
-				fresh = append(fresh, m)
-			}
-		}
-		out[i] = m
-	}
-	a.messages = out
-	a.mu.Unlock()
-
-	// Emit OUTSIDE the lock — onEvent handlers may do I/O (recorder
-	// writes). Without these emits the session recorder never persists
-	// the cancellation bookkeeping that handleStreamCancel pushes into
-	// the agent via ResyncMessages — the next inference.requested then
-	// references MessageIDs that have no matching message.appended row
-	// and replay integrity fails.
-	for _, m := range fresh {
-		a.emitAppend(m)
-	}
-}
-
-// messagesEquivalent reports whether two messages represent the same
-// logical entry, modulo ID. Used by SetMessages to detect when a
-// position-aligned new message is just a re-stamped copy of the old
-// one (conv-side ID vs agent-side ID for the same content) so the old
-// ID can be preserved across a ResyncMessages.
-func messagesEquivalent(a, b Message) bool {
-	if a.Role != b.Role || a.Content != b.Content {
-		return false
-	}
-	if (a.ToolResult == nil) != (b.ToolResult == nil) {
-		return false
-	}
-	if a.ToolResult != nil && a.ToolResult.ToolCallID != b.ToolResult.ToolCallID {
-		return false
-	}
-	if len(a.ToolCalls) != len(b.ToolCalls) {
-		return false
-	}
-	for i := range a.ToolCalls {
-		if a.ToolCalls[i].ID != b.ToolCalls[i].ID {
-			return false
-		}
-	}
-	return true
+	defer a.mu.Unlock()
+	a.messages = make([]Message, len(msgs))
+	copy(a.messages, msgs)
 }
 
 // Append adds a message to the conversation and fires the OnMessage hook.
@@ -222,11 +157,14 @@ func (a *agent) Run(ctx context.Context) error {
 					return nil
 				}
 				// Turn-only interrupt: parent ctx still alive, the turn's
-				// ctx was cancelled by InterruptCurrentTurn. Go back to
-				// waitForInput instead of tearing down Run.
+				// ctx was cancelled by InterruptCurrentTurn. Just bail
+				// back to waitForInput — provider-side convert layers
+				// already strip any orphaned tool_use blocks left in
+				// a.messages, and the UI attaches a "previous turn was
+				// interrupted" reminder onto the next user message so
+				// the model knows the prior response did not complete.
 				if ctx.Err() == nil && errors.Is(err, context.Canceled) {
 					glog.QueueLog("agent.Run: turn interrupted by user, resuming wait")
-					// The interrupt that drove this cancel is now consumed.
 					a.interruptPending.Store(false)
 					break
 				}
@@ -252,10 +190,8 @@ func (a *agent) Run(ctx context.Context) error {
 
 // InterruptCurrentTurn cancels the ctx of the currently-running ThinkAct
 // without ending Run. Returns a channel that closes when the in-flight
-// ThinkAct has fully unwound — callers that need to mutate shared agent
-// state right after the interrupt (e.g. ResyncMessages overwriting
-// a.messages) should wait on the channel first to avoid racing the
-// agent goroutine's own appends.
+// ThinkAct has fully unwound — callers that need to observe a quiescent
+// agent (e.g. before pushing a new message) should wait on the channel.
 //
 // When called between turns (turn pointer is nil), latches the
 // interrupt so the next inner-loop iteration bails before starting a

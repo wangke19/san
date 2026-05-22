@@ -125,36 +125,6 @@ func Test_userContentToBlocks_preserveInlineImageOrder(t *testing.T) {
 	}
 }
 
-func TestExtractLastUserTextSkipsInterruptMarker(t *testing.T) {
-	entries := []Entry{
-		{
-			Type: EntryUser,
-			Message: &EntryMessage{
-				Role:    "user",
-				Content: []ContentBlock{{Type: "text", Text: "release 1.18.1"}},
-			},
-		},
-		{
-			Type: EntryAssistant,
-			Message: &EntryMessage{
-				Role:    "assistant",
-				Content: []ContentBlock{{Type: "text", Text: "checking [Interrupted]"}},
-			},
-		},
-		{
-			Type: EntryUser,
-			Message: &EntryMessage{
-				Role:    "user",
-				Content: []ContentBlock{{Type: "text", Text: core.InterruptedByUserMarker}},
-			},
-		},
-	}
-
-	if got := ExtractLastUserText(entries); got != "release 1.18.1" {
-		t.Fatalf("expected the marker to be skipped and the real prompt surfaced, got %q", got)
-	}
-}
-
 func Test_extractUserContent_restoresDisplayContent(t *testing.T) {
 	msgs := EntriesToMessages([]Entry{{
 		Type: EntryUser,

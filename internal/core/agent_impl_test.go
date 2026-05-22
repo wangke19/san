@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 )
@@ -191,99 +190,6 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for: %s", what)
-}
-
-// recordingAgent wraps the agent under test to capture OnAppend events
-// emitted via SetMessages, so the test can assert which IDs the
-// session recorder would actually persist.
-type recordingAgent struct {
-	mu    sync.Mutex
-	calls []Message
-}
-
-func (r *recordingAgent) onEvent(ev Event) {
-	if ev.Type != OnAppend {
-		return
-	}
-	msg, ok := ev.Data.(Message)
-	if !ok {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, msg)
-}
-
-func (r *recordingAgent) ids() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, len(r.calls))
-	for i, m := range r.calls {
-		out[i] = m.ID
-	}
-	return out
-}
-
-// TestSetMessagesReconcilesIDsAcrossResync covers the cancel-and-resume
-// path: ResyncMessages hands SetMessages a snapshot whose first N items
-// match the agent's existing history but carry conv-stamped IDs that
-// differ from the agent-stamped originals. Without reconciliation those
-// N "new" IDs would each trigger a spurious OnAppend, the recorder
-// would double-record every retained message, and the integrity check
-// would flag orphans. The reconciliation must preserve the old IDs and
-// emit OnAppend only for genuinely-new entries (the [Interrupted]
-// assistant + [Request interrupted by user] marker).
-func TestSetMessagesReconcilesIDsAcrossResync(t *testing.T) {
-	rec := &recordingAgent{}
-	ag := NewAgent(Config{
-		ID:      "test",
-		LLM:     newBlockingLLM(0),
-		System:  NewSystem(),
-		Tools:   NewTools(),
-		OnEvent: rec.onEvent,
-	}).(*agent)
-
-	// Seed agent with five messages stamped by the agent itself.
-	original := []Message{
-		{ID: "Y1", Role: RoleUser, Content: "hi"},
-		{ID: "Y2", Role: RoleAssistant, Content: "Hi! How can I help you today?"},
-		{ID: "Y3", Role: RoleUser, Content: "你好呀"},
-		{ID: "Y4", Role: RoleAssistant, Content: "你好！有什么我可以帮你的吗？"},
-		{ID: "Y5", Role: RoleUser, Content: "可以做什么"},
-	}
-	ag.SetMessages(original)
-	// Initial seed had no prior state to compare against, so all five
-	// fire as fresh. Reset the recorder so the assertions below cover
-	// only what the second SetMessages emits.
-	rec.mu.Lock()
-	rec.calls = nil
-	rec.mu.Unlock()
-
-	// Mimic the ResyncMessages payload: same five messages with
-	// conv-stamped IDs (X*) plus the two cancellation entries.
-	resynced := []Message{
-		{ID: "X1", Role: RoleUser, Content: "hi"},
-		{ID: "X2", Role: RoleAssistant, Content: "Hi! How can I help you today?"},
-		{ID: "X3", Role: RoleUser, Content: "你好呀"},
-		{ID: "X4", Role: RoleAssistant, Content: "你好！有什么我可以帮你的吗？"},
-		{ID: "X5", Role: RoleUser, Content: "可以做什么"},
-		{ID: "X6", Role: RoleAssistant, Content: "[Interrupted]"},
-		{ID: "X7", Role: RoleUser, Content: "[Request interrupted by user]"},
-	}
-	ag.SetMessages(resynced)
-
-	// The five carried-over entries must keep their original IDs so the
-	// recorder still has a single row per logical message.
-	for i, want := range []string{"Y1", "Y2", "Y3", "Y4", "Y5"} {
-		if got := ag.messages[i].ID; got != want {
-			t.Fatalf("messages[%d].ID = %q, want %q (old ID should be preserved)", i, got, want)
-		}
-	}
-	// Only the two genuinely-new entries should have triggered OnAppend.
-	got := rec.ids()
-	if len(got) != 2 || got[0] != "X6" || got[1] != "X7" {
-		t.Fatalf("OnAppend IDs = %v, want [X6 X7] (one per truly-new message)", got)
-	}
 }
 
 func TestCanExecuteToolBatchInParallelOnlyAllowsReadOnlyTools(t *testing.T) {

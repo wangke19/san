@@ -228,18 +228,9 @@ func toolResultToBlocks(tr *core.ToolResult) []ContentBlock {
 
 func ExtractLastUserText(entries []Entry) string {
 	for i := len(entries) - 1; i >= 0; i-- {
-		text, ok := extractUserText(entries[i])
-		if !ok {
-			continue
+		if text, ok := extractUserText(entries[i]); ok {
+			return text
 		}
-		// Skip the interrupt marker — it's a synthetic user payload
-		// added by the cancel handler, not something the user typed.
-		// Surfacing it as the session's "last prompt" in the picker
-		// would hide what the user actually said most recently.
-		if text == core.InterruptedByUserMarker {
-			continue
-		}
-		return text
 	}
 	return ""
 }

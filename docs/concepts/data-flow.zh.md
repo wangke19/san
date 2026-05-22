@@ -539,19 +539,16 @@ scrollback，`CommittedCount` 前进一格，重绘区不再画它。
        │      │                                       ThinkAct 返回
        │      │                                       close(h.done) ──┐
        │      └─ <-h.done   （≤ 250 ms）◀ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─┘
-       │         agent 已 quiesce —— 改共享状态此刻安全
        │
-       │ 2. conv 侧的 cancel 记账
+       │ 2. Reminder.Enqueue(InterruptReminder)
+       │      └─ "The previous response was interrupted by the user."
+       │         走 attachPendingReminders 这个老通道：下一条用户消息
+       │         会自动被包成 <system-reminder> 注入。
+       │
+       │ 3. conv 侧 UI 更新（仅显示，不回写 agent）
        │      ├─ Stream.Stop / 隐藏弹窗 / 清空 pending 问题
-       │      ├─ cancelPendingToolCalls  → 追加 cancelled tool_result
-       │      ├─ MarkLastInterrupted     → asst.Content += " [Interrupted]"
-       │      └─ AppendInterruptedByUserMarker
-       │                  → 追加 user "[Request interrupted by user]"
-       │
-       │ 3. Agent.ResyncMessages(conv.ConvertToProvider())
-       │      └─ agent.SetMessages 覆写 a.messages 并对
-       │         旧快照里没有的 ID 发 OnAppend
-       │         （session recorder 跟上，不会有完整性缺口）
+       │      ├─ cancelPendingToolCalls    → 显示已取消的 tool_result
+       │      └─ MarkLastInterrupted       → assistant 末尾 ⏸ 徽章
        │
        │ 4. CommitMessages + drainInputQueueAfterCancel
        │
@@ -568,6 +565,9 @@ scrollback，`CommittedCount` 前进一格，重绘区不再画它。
    用户输入 "改做 B"
    ──▶ SubmitToAgent
        └─ ensureAgentSession 检查到 Active=true —— 不重建
+       └─ sendToAgent → attachPendingReminders
+                          → "<system-reminder>The previous response
+                             was interrupted…</system-reminder>改做 B"
        └─ Agent.Send ──────────▶  inbox
                                   waitForInput 解除阻塞
                                   循环顶部：interruptPending=false → 正常进入
@@ -575,13 +575,30 @@ scrollback，`CommittedCount` 前进一格，重绘区不再画它。
                                                                 ─▶ 新流
 ```
 
+### 为什么 cancel 时根本不需要碰 agent 状态
+
+handleStreamCancel **不**往 `a.messages` 里塞任何 marker，也**不**把
+conv 同步回 agent——两边各自维护自己的副本和 ID。能做到这点是因为：
+
+- **悬空的 `tool_use` 由 convert 层兜底**。如果 cancel 发生在
+  `PostInfer` 已经追加了带 `tool_calls` 的 assistant 但 tool_result 还
+  没全回来的时刻，下一轮推理时的 convert 会把没有匹配 result 的
+  `tool_use` 剥掉（anthropic 的 `sanitizeToolResults`、openaicompat 的
+  `SanitizeToolMessages`）。
+- **连续 user 消息也是允许的**。Anthropic converter 自己 `mergeConsecutiveMessages`；
+  OpenAI / DeepSeek / Moonshot 等都直接接受 user 接 user。
+- **打断信号走 reminder**。不再注入任何合成的 assistant 或 user 消息——
+  cancel 时只是 enqueue 一段 reminder body，下次用户提交时
+  `attachPendingReminders` 自动用 `<system-reminder>` 把它包到那条用户
+  消息上。模型拿到明确的"上一轮被打断"提示，对话链里没有任何合成消息。
+
 三件套撑起整个 cancel 的安全性：
 
 | 机制 | 它在保护什么 |
 |---|---|
 | `turn atomic.Pointer[turnHandle]` | "当前活动 turn 的手柄"。`Swap(nil)` 让 cancel 原子化，避免两次打断重复 cancel 下一轮。 |
 | `interruptPending atomic.Bool` | "两轮之间"打断的备忘录（此刻 `turn` 短暂为 nil），Run 内循环下次开头读到则直接 break 回 `waitForInput`，不会偷跑一轮 ThinkAct。 |
-| `turnHandle.done` chan + 250 ms 上限 | 握手：`Task.InterruptTurn` 等 ThinkAct 真正 unwind 之后再让 `ResyncMessages` 改 `a.messages`，消除和 agent goroutine 自家 `a.append` 抢着写的 race。上限是给"不响应 ctx 的工具"留的保险；正常情况微秒级。 |
+| `turnHandle.done` chan + 250 ms 上限 | UI 等 ThinkAct 真正 unwind 后再返回用户——避免 spinner / modal 状态和 agent 最后几个 ctx-cancelled 的 emit 抢着收尾。上限是给"不响应 ctx 的工具"留的保险；正常情况微秒级。 |
 
 为什么和旧实现差别大：旧的 cancel 路径直接 `Agent.Stop`，杀掉 goroutine，
 下一条用户消息时整个 agent 重建一遍——一次 `buildAgent`、一份新的

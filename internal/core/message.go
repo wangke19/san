@@ -20,12 +20,6 @@ func NewMessageID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// InterruptedByUserMarker is the user-role payload appended after a
-// mid-stream cancel. Defined in core so packages that handle history
-// (session metadata, transcript) can recognize and skip it without
-// taking a dependency on the UI layer that produces it.
-const InterruptedByUserMarker = "[Request interrupted by user]"
-
 // Role identifies who produced a message in the conversation.
 type Role string
 

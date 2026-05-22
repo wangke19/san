@@ -12,25 +12,31 @@ import (
 	"github.com/genai-io/gen-code/internal/image"
 )
 
+// InterruptReminder is enqueued on the reminder service when the user
+// cancels a streaming turn. It piggybacks onto the next user message
+// via attachPendingReminders, so the model gets an explicit "the
+// previous response did not complete" signal without us having to
+// inject a synthetic assistant or user message into the chain.
+const InterruptReminder = "The previous response was interrupted by the user. Acknowledge the interruption and proceed with their next instruction."
+
 func (m *model) handleStreamCancel() tea.Cmd {
-	// InterruptTurn cancels just the in-flight ThinkAct — Run loop keeps
-	// going and will pick up the next Send from inbox. The earlier code
-	// called Stop here, which tore the agent down and forced a full
-	// rebuild (and a Stop/Start event pair in the session) on the next
-	// message.
+	// The whole cancel path is just two things now: stop the agent's
+	// in-flight turn, and arrange for the next user message to carry a
+	// reminder explaining what happened. Convert-layer sanitization
+	// already strips any orphaned tool_use blocks the cancel left in
+	// the agent's history, and Anthropic's converter merges consecutive
+	// same-role messages — so the agent does not need to synthesize
+	// any marker of its own, and the conv layer does not need to push
+	// state back into the agent.
 	m.services.Agent.InterruptTurn()
+	if m.services.Reminder != nil {
+		m.services.Reminder.Enqueue(InterruptReminder)
+	}
 	m.conv.Stream.Stop()
 	m.conv.ProgressHub.DrainPendingQuestions()
 	m.conv.Modal.Question.Hide()
 	m.cancelPendingToolCalls()
 	m.conv.MarkLastInterrupted()
-	m.conv.AppendInterruptedByUserMarker()
-
-	// Reconcile the agent's history with the cancellation bookkeeping
-	// just written into conv (cancelled tool results, interrupt marker,
-	// "[Interrupted]" suffix). Without this the next inference would
-	// fire against a stale snapshot.
-	m.services.Agent.ResyncMessages(m.conv.ConvertToProvider())
 
 	cmds := m.CommitMessages()
 	if cmd := m.drainInputQueueAfterCancel(); cmd != nil {

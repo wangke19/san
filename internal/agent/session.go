@@ -87,15 +87,14 @@ func (s *Task) Send(content string, images []core.Image) {
 // interruptDrainTimeout caps how long InterruptTurn waits for the agent
 // goroutine to actually unwind its in-flight ThinkAct. Keeping this
 // tight avoids UI stalls; if the agent is still in a slow tool the
-// caller proceeds anyway (ResyncMessages is best-effort and the next
-// inference will pull a fresh snapshot regardless).
+// caller proceeds anyway — provider-side convert layers strip any
+// orphaned tool_use blocks before the next inference fires.
 const interruptDrainTimeout = 250 * time.Millisecond
 
 // InterruptTurn cancels the agent's in-flight turn without ending its
-// Run loop and waits briefly for the turn to actually unwind. After
-// this returns it is safe for the caller to mutate shared agent state
-// (e.g. via ResyncMessages) without racing the agent goroutine's own
-// appends.
+// Run loop and waits briefly for the turn to actually unwind. The next
+// Send goes through the same inbox channel and resumes the session in
+// place — no rebuild, no Stop/Start event pair.
 //
 // Also clears pendingPermRequest: a permission prompt that was open at
 // the moment of interrupt is dropped along with the turn, so the
@@ -116,20 +115,6 @@ func (s *Task) InterruptTurn() {
 	case <-done:
 	case <-time.After(interruptDrainTimeout):
 	}
-}
-
-// ResyncMessages replaces the running agent's conversation history with
-// the provided snapshot. Used after InterruptTurn to reconcile the
-// agent with UI-side bookkeeping (cancelled tool results, interrupt
-// markers) added by the cancel handler. No-op if no agent is active.
-func (s *Task) ResyncMessages(msgs []core.Message) {
-	s.mu.RLock()
-	ag := s.agent
-	s.mu.RUnlock()
-	if ag == nil {
-		return
-	}
-	ag.SetMessages(msgs)
 }
 
 func (s *Task) Outbox() <-chan core.Event {

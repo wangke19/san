@@ -137,31 +137,6 @@ func (m *ConversationModel) MarkLastInterrupted() {
 	}
 }
 
-// InterruptedByUserMarker re-exports the marker from core so callers in
-// this package can keep the existing local identifier.
-const InterruptedByUserMarker = core.InterruptedByUserMarker
-
-// AppendInterruptedByUserMarker appends [[InterruptedByUserMarker]] as a
-// user-role message so subsequent inference sees a clean turn boundary
-// after a cancel. Idempotent against back-to-back cancels: skips if the
-// last message is already this exact marker. Intentionally appended
-// even when the tail is a cancelled tool result — that result is
-// addressed to the assistant's tool_use; the marker is the user's own
-// explicit signal and gives the next inference an unambiguous user
-// turn to react to.
-func (m *ConversationModel) AppendInterruptedByUserMarker() {
-	if len(m.Messages) > 0 {
-		last := m.Messages[len(m.Messages)-1]
-		if last.Role == core.RoleUser && last.ToolResult == nil && last.Content == InterruptedByUserMarker {
-			return
-		}
-	}
-	m.Append(core.ChatMessage{
-		Role:    core.RoleUser,
-		Content: InterruptedByUserMarker,
-	})
-}
-
 func (m *ConversationModel) ToggleMostRecentExpandable() {
 	for i := len(m.Messages) - 1; i >= 0; i-- {
 		msg := &m.Messages[i]
