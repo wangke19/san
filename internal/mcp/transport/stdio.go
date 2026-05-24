@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/genai-io/gen-code/internal/proc"
 )
 
 // STDIOConfig contains configuration for STDIO transport
@@ -63,10 +65,8 @@ func (t *STDIOTransport) Start(ctx context.Context) error {
 	t.cmd = exec.CommandContext(ctx, command, args...)
 	t.cmd.Env = buildEnv(env)
 
-	// Set up process group for clean termination
-	t.cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
+	// Set up process group for clean termination (no-op on Windows).
+	proc.SetProcessGroup(t.cmd)
 
 	// Connect stdin/stdout
 	var err error
@@ -239,12 +239,13 @@ func (t *STDIOTransport) Close() error {
 	case <-time.After(2 * time.Second):
 	}
 
-	// Terminate process
+	// Terminate process. On Unix this signals the whole group so the MCP
+	// server's own children get the signal too; on Windows TerminateGroup
+	// ignores the signal and hard-kills the direct child immediately, which
+	// makes the 5s wait below a no-op rather than wasted shutdown latency.
 	if t.cmd != nil && t.cmd.Process != nil {
-		// Try graceful shutdown first
-		_ = t.cmd.Process.Signal(syscall.SIGTERM)
+		_ = proc.TerminateGroup(t.cmd, syscall.SIGTERM)
 
-		// Wait with timeout
 		done := make(chan error, 1)
 		go func() {
 			done <- t.cmd.Wait()
@@ -253,8 +254,7 @@ func (t *STDIOTransport) Close() error {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			// Force kill if still running
-			_ = t.cmd.Process.Kill()
+			_ = proc.TerminateGroup(t.cmd, syscall.SIGKILL)
 			<-done
 		}
 	}

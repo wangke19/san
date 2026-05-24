@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/genai-io/gen-code/internal/proc"
 	"github.com/genai-io/gen-code/internal/setting"
 )
 
@@ -38,13 +39,15 @@ func (e *Engine) executeCommand(ctx context.Context, hookCmd setting.HookCmd, in
 	cmd := buildShellCommand(ctx, hookCmd, cwd)
 	cmd.Stdin = bytes.NewReader(inputJSON)
 	cmd.Env = e.buildEnv(ctx, input)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.SetProcessGroup(cmd)
 	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		_ = proc.TerminateGroup(cmd, syscall.SIGKILL)
 		return nil
 	}
+	// Backstop: if a grandchild keeps the stdout/stderr pipe open after the
+	// shell is killed (common on Windows where we can't group-kill), give Wait
+	// a bounded time to drain before exec force-closes the pipes.
+	cmd.WaitDelay = 5 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -92,13 +95,12 @@ func (e *Engine) executeCommandBidirectional(ctx context.Context, hookCmd settin
 	cwd := e.getCwd()
 	cmd := buildShellCommand(ctx, hookCmd, cwd)
 	cmd.Env = e.buildEnv(ctx, input)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.SetProcessGroup(cmd)
 	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		_ = proc.TerminateGroup(cmd, syscall.SIGKILL)
 		return nil
 	}
+	cmd.WaitDelay = 5 * time.Second
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {

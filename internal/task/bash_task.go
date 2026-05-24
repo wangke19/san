@@ -7,6 +7,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/genai-io/gen-code/internal/proc"
 )
 
 // BashTask represents a background bash command task
@@ -169,45 +171,26 @@ func (t *BashTask) WaitForCompletion(timeout time.Duration) bool {
 	}
 }
 
-// Stop gracefully stops the task (SIGTERM)
+// Stop gracefully stops the task (SIGTERM on Unix; on Windows there is no
+// signal-based graceful stop, so the underlying helper hard-kills the child).
 func (t *BashTask) Stop() error {
-	// Cancel the context first
 	if t.cancel != nil {
 		t.cancel()
 	}
-
-	// Send SIGTERM to process group
-	if t.PID > 0 {
-		if err := syscall.Kill(-t.PID, syscall.SIGTERM); err != nil {
-			// Ignore if process already exited
-			if err != syscall.ESRCH {
-				return err
-			}
-		}
-	}
-
-	return nil
+	return proc.TerminateGroup(t.cmd, syscall.SIGTERM)
 }
 
-// Kill forcefully terminates the task (SIGKILL)
+// Kill forcefully terminates the task (SIGKILL). markKilled runs even if the
+// kill returned an error, so a child that races us to exit (or a Windows
+// TerminateProcess that surfaces a benign error) still leaves the task in
+// StatusKilled with `done` closed, instead of stuck in StatusRunning.
 func (t *BashTask) Kill() error {
-	// Cancel the context
 	if t.cancel != nil {
 		t.cancel()
 	}
-
-	// Send SIGKILL to process group
-	if t.PID > 0 {
-		if err := syscall.Kill(-t.PID, syscall.SIGKILL); err != nil {
-			// Ignore if process already exited
-			if err != syscall.ESRCH {
-				return err
-			}
-		}
-	}
-
+	err := proc.TerminateGroup(t.cmd, syscall.SIGKILL)
 	t.markKilled()
-	return nil
+	return err
 }
 
 // GetStatus returns the current task status info
