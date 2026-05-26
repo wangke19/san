@@ -11,7 +11,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/genai-io/gen-code/internal/app/conv"
 	"github.com/genai-io/gen-code/internal/app/kit"
@@ -43,20 +42,18 @@ func (m *model) BuildCompactRequest(focus, trigger string) conv.CompactRequest {
 // and tools are reused from cache (no rebuild).
 func (m *model) OnCompacted(info core.CompactInfo) tea.Cmd {
 	scrollbackCmds := m.commitAllMessages()
-	boundaryStyle := lipgloss.NewStyle().Foreground(kit.CurrentTheme.Muted)
-	boundary := boundaryStyle.Render(fmt.Sprintf("✻ Conversation compacted — %d messages summarized (scroll up for history)", info.OriginalCount))
 
 	m.conv.Clear()
 	m.env.ResetContextDisplay()
 	token := m.userInput.Provider.SetStatusMessage("compacted")
-	// The full summary stays as the model's context (Content) and is persisted,
-	// but the transcript shows a terse one-liner instead of dumping the raw
-	// summary markdown. DisplayContent is render-only; Content is what the model
-	// and session store keep.
+	// The summary is injected as a user message — the model reads it (Content),
+	// and it persists + seeds resume — but the UI renders it as a single system
+	// notice (see RenderMessageAt: IsCompactSummary), so the transcript shows
+	// one clean line instead of the raw summary markdown or a "❭" user turn.
 	m.conv.Append(core.ChatMessage{
 		Role:           core.RoleUser,
 		Content:        core.FormatCompactSummary(info.Summary),
-		DisplayContent: fmt.Sprintf("Summary of %d earlier messages (kept as context).", info.OriginalCount),
+		DisplayContent: fmt.Sprintf("✻ Conversation compacted — %d messages summarized (scroll up for history)", info.OriginalCount),
 	})
 
 	trigger := info.Trigger
@@ -94,7 +91,7 @@ func (m *model) OnCompacted(info core.CompactInfo) tea.Cmd {
 		}
 	}
 
-	scrollPart := tea.Sequence(append(scrollbackCmds, tea.Println(boundary), tea.ClearScreen)...)
+	scrollPart := tea.Sequence(append(scrollbackCmds, tea.ClearScreen)...)
 	return tea.Batch(scrollPart, m.ContinueOutbox(), kit.StatusTimer(3*time.Second, token))
 }
 

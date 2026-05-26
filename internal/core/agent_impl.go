@@ -506,9 +506,20 @@ func isReadOnlyToolCall(name string) bool {
 // CompactMaxTokens is the max output tokens for compaction LLM calls.
 const CompactMaxTokens = 4096
 
+// CompactSummaryPrefix marks a user message as the post-compaction summary.
+// The UI uses it to render that message as a system notice rather than a normal
+// user turn, while the model and session store keep the full text.
+const CompactSummaryPrefix = "Previous context:\n"
+
 // FormatCompactSummary formats a compaction summary for injection as a user message.
 func FormatCompactSummary(summary string) string {
-	return "Previous context:\n" + summary
+	return CompactSummaryPrefix + summary
+}
+
+// IsCompactSummary reports whether content is a post-compaction summary message
+// (produced by FormatCompactSummary).
+func IsCompactSummary(content string) bool {
+	return strings.HasPrefix(content, CompactSummaryPrefix)
 }
 
 // compact calls CompactFunc and replaces messages with the summary.
