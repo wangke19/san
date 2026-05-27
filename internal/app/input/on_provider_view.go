@@ -393,7 +393,7 @@ var providerSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 
 func (s *ProviderSelector) renderConnectResult() string {
 	// While in flight, show just the animated braille spinner (no text).
-	if s.IsBusy() {
+	if s.IsConnecting() {
 		frame := providerSpinnerFrames[s.spinnerTick%len(providerSpinnerFrames)]
 		return kit.DimStyle().Render(frame)
 	}

@@ -51,8 +51,8 @@ func UpdateProvider(deps OverlayDeps, state *ProviderState, msg tea.Msg) (tea.Cm
 	switch msg := msg.(type) {
 	case ProviderConnectingMsg:
 		// Keep ticking the spinner while connect/refresh is in flight; stop once
-		// the matching ProviderConnectResultMsg lands and IsBusy goes false.
-		if state.Selector.IsBusy() {
+		// the matching ProviderConnectResultMsg lands and IsConnecting goes false.
+		if state.Selector.IsConnecting() {
 			state.Selector.AdvanceSpinner()
 			return providerConnectingTickCmd(), true
 		}
@@ -244,9 +244,9 @@ const (
 	providerStatusConnecting = "Connecting..."
 )
 
-// IsBusy reports whether a connect/refresh is in flight, so the spinner-tick
+// IsConnecting reports whether a connect/refresh is in flight, so the spinner-tick
 // loop keeps ticking and the row renders an animated frame.
-func (s *ProviderSelector) IsBusy() bool {
+func (s *ProviderSelector) IsConnecting() bool {
 	return s.active &&
 		(s.lastConnectResult == providerStatusRefreshing || s.lastConnectResult == providerStatusConnecting)
 }
@@ -1002,7 +1002,7 @@ func (s *ProviderSelector) clampSelection() {
 
 // refreshAuthMethod re-fetches models for an already connected provider auth method.
 func (s *ProviderSelector) refreshAuthMethod(item providerAuthMethodItem, authIdx int) tea.Cmd {
-	if s.IsBusy() {
+	if s.IsConnecting() {
 		// A connect/refresh is already in flight; ignore re-entry so we don't
 		// start a second spinner-tick loop or a concurrent store write.
 		return nil
@@ -1060,7 +1060,7 @@ func (s *ProviderSelector) refreshAuthMethod(item providerAuthMethodItem, authId
 
 // connectAuthMethod initiates an async connection to a provider auth method.
 func (s *ProviderSelector) connectAuthMethod(item providerAuthMethodItem, authIdx int) tea.Cmd {
-	if s.IsBusy() {
+	if s.IsConnecting() {
 		// A connect/refresh is already in flight; ignore re-entry so we don't
 		// start a second spinner-tick loop or a concurrent store write.
 		return nil
