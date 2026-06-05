@@ -3,6 +3,11 @@
 All notable changes to San are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [v2.0.1] - 2026-06-05
+
+### Fixed
+- Banner shows model display name, status bar shows model ID ([@yanmxa](https://github.com/yanmxa) in [#101](https://github.com/genai-io/san/pull/101))
+
 ## [v2.0.0] - 2026-06-05
 
 ### Added
