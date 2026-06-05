@@ -7,11 +7,22 @@ Thanks for your interest in contributing! This guide will help you get started.
 ```bash
 git clone https://github.com/genai-io/san.git
 cd san
+git config core.hooksPath .githooks
 go build -o san ./cmd/san
 ./san
 ```
 
 ## Development
+
+### Git Hooks
+
+The repo ships a pre-commit hook in `.githooks/` that auto-formats
+staged Go files. The `git config core.hooksPath .githooks` step above
+activates it. Without it, CI will reject unformatted code.
+
+The hook only formats files that have no unstaged changes, so partial
+stages (`git add -p`) are safe. Files with mixed staged/unstaged
+changes are skipped — format those manually with `make format`.
 
 ### Prerequisites
 
