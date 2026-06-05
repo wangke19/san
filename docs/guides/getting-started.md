@@ -41,6 +41,7 @@ for Anthropic). Supported providers and the env var each one reads:
 | Moonshot | `MOONSHOT_API_KEY` |
 | Alibaba | `DASHSCOPE_API_KEY` |
 | MiniMax | `MINIMAX_API_KEY` |
+| MiMo | `MIMO_API_KEY` |
 | Z.ai (GLM) | `BIGMODEL_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 

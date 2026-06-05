@@ -61,7 +61,7 @@ func ResetDefaultConn()       // test-only
   `~/.san/providers.json`; tracks current model.
 - `stream/` — provider-side helpers for SSE parsing.
 - Provider subpackages: `anthropic/`, `openai/`, `google/`, `moonshot/`,
-  `alibaba/`, `bigmodel/`, `minmax/`, `deepseek/`, `ollama/`, `openaicompat/`.
+  `alibaba/`, `bigmodel/`, `minmax/`, `mimo/`, `deepseek/`, `ollama/`, `openaicompat/`.
 
 ## Lifecycle
 

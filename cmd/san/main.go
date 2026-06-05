@@ -21,6 +21,7 @@ import (
 	_ "github.com/genai-io/san/internal/llm/bigmodel"
 	_ "github.com/genai-io/san/internal/llm/deepseek"
 	_ "github.com/genai-io/san/internal/llm/google"
+	_ "github.com/genai-io/san/internal/llm/mimo"
 	_ "github.com/genai-io/san/internal/llm/minmax"
 	_ "github.com/genai-io/san/internal/llm/moonshot"
 	_ "github.com/genai-io/san/internal/llm/ollama"

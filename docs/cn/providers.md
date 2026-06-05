@@ -45,6 +45,7 @@ import (
     _ "github.com/genai-io/san/internal/llm/moonshot"
     _ "github.com/genai-io/san/internal/llm/alibaba"
     _ "github.com/genai-io/san/internal/llm/minmax"
+    _ "github.com/genai-io/san/internal/llm/mimo"
     _ "github.com/genai-io/san/internal/llm/bigmodel"
     _ "github.com/genai-io/san/internal/llm/deepseek"
 )
@@ -158,6 +159,18 @@ off → low → medium → high → maximum
 
 - **包**：[`internal/llm/minmax/`](../../internal/llm/minmax/)
 - **API 变量**：`MINIMAX_API_KEY`
+
+---
+
+### 6.5 MiMo（小米）
+
+- **包**：[`internal/llm/mimo/`](../../internal/llm/mimo/)
+- **API 变量**：`MIMO_API_KEY`（可选 `MIMO_BASE_URL`，默认 `https://api.xiaomimimo.com/anthropic`）
+- **支持模型**：MiMo V2.5 Pro、MiMo V2.5、MiMo V2 Pro、MiMo V2 Flash、MiMo V2 Omni
+- **特性**：
+  - 兼容 Anthropic API 格式（复用 anthropic provider 的流式逻辑）
+  - 模型列表通过平台 API 获取，失败时回退到静态目录
+  - 支持成本估算
 
 ---
 

@@ -22,6 +22,7 @@ const (
 	DeepSeek  Name = "deepseek"
 	SenseNova Name = "sensenova"
 	Ollama    Name = "ollama"
+	Mimo      Name = "mimo"
 )
 
 // AuthMethod represents an authentication method for an LLM provider.

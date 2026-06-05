@@ -17,6 +17,7 @@ import (
 	"github.com/genai-io/san/internal/core"
 	"github.com/genai-io/san/internal/llm"
 	"github.com/genai-io/san/internal/llm/deepseek"
+	"github.com/genai-io/san/internal/llm/mimo"
 	"github.com/genai-io/san/internal/llm/minmax"
 	"github.com/genai-io/san/internal/log"
 )
@@ -60,6 +61,16 @@ func (m *model) OnTokenUsage(resp *core.InferResponse) {
 			}
 		case llm.DeepSeek:
 			cost, ok := deepseek.EstimateCost(m.env.CurrentModel.ModelID, llm.Usage{
+				InputTokens:              resp.TokensIn,
+				OutputTokens:             resp.TokensOut,
+				CacheCreationInputTokens: resp.CacheCreateTokens,
+				CacheReadInputTokens:     resp.CacheReadTokens,
+			})
+			if ok {
+				m.env.ConversationCost = m.env.ConversationCost.Add(cost)
+			}
+		case llm.Mimo:
+			cost, ok := mimo.EstimateCost(m.env.CurrentModel.ModelID, llm.Usage{
 				InputTokens:              resp.TokensIn,
 				OutputTokens:             resp.TokensOut,
 				CacheCreationInputTokens: resp.CacheCreateTokens,
