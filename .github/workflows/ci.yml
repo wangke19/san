@@ -6,14 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.25.6'
+          cache: true
       - name: Install format tools
         run: make install-format-tools
       - name: Format check
@@ -21,8 +25,8 @@ jobs:
       - name: Build
         run: make build-all
       - name: Unit tests
-        run: go test ./internal/...
+        run: go test -race ./internal/...
       - name: Integration tests
-        run: go test ./tests/integration/...
+        run: go test -race ./tests/integration/...
       - name: Vet
         run: make lint
