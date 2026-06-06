@@ -171,7 +171,9 @@ func (r CompletionResponse) LogToolCallSummary(escaper func(string) string) stri
 	return sb.String()
 }
 
-// Usage contains token usage information.
+// Usage contains token usage information. Field names use the project's domain
+// vocabulary (InputTokens/CacheCreationInputTokens/…); the json tags preserve each
+// provider's wire format (e.g. Anthropic's cache_creation_input_tokens).
 type Usage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
