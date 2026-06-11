@@ -923,36 +923,6 @@ func providerFirstEnvVar(envVars []string) string {
 
 // ── Loading ────────────────────────────────────────────────────────────────────
 
-// providerOrder defines the display order for providers.
-var providerOrder = []llm.Name{
-	llm.Anthropic,
-	llm.OpenAI,
-	llm.Google,
-	llm.DeepSeek,
-	llm.SenseNova,
-	llm.MinMax,
-	llm.Moonshot,
-	llm.Alibaba,
-	llm.BigModel,
-	llm.Ollama,
-	llm.Mimo,
-}
-
-// providerDisplayNames maps provider to human-readable name.
-var providerDisplayNames = map[llm.Name]string{
-	llm.Anthropic: "Anthropic",
-	llm.OpenAI:    "OpenAI",
-	llm.Google:    "Google",
-	llm.DeepSeek:  "DeepSeek",
-	llm.SenseNova: "SenseNova (商汤)",
-	llm.MinMax:    "MiniMax",
-	llm.Moonshot:  "Moonshot",
-	llm.Alibaba:   "Alibaba",
-	llm.BigModel:  "Z.ai (GLM series)",
-	llm.Ollama:    "Ollama (Local)",
-	llm.Mimo:      "Xiaomi MiMo",
-}
-
 // Enter opens the unified model & provider kit.
 func (s *ProviderSelector) Enter(ctx context.Context, width, height int) (tea.Cmd, error) {
 	s.resetNavigation()
@@ -987,7 +957,7 @@ func (s *ProviderSelector) loadProviderData() (tea.Cmd, error) {
 	s.connectedProviders = nil
 	s.allProviders = nil
 
-	for _, p := range providerOrder {
+	for _, p := range llm.ProvidersByOrder() {
 		infos, ok := providersWithStatus[p]
 		if !ok || len(infos) == 0 {
 			continue
@@ -995,7 +965,7 @@ func (s *ProviderSelector) loadProviderData() (tea.Cmd, error) {
 
 		item := providerProviderItem{
 			Provider:    p,
-			DisplayName: providerDisplayNames[p],
+			DisplayName: llm.ProviderDisplayName(p),
 			AuthMethods: make([]providerAuthMethodItem, 0, len(infos)),
 		}
 
@@ -1058,7 +1028,7 @@ func (s *ProviderSelector) ensureModelProvidersExist() {
 		}
 		seen[m.ProviderName] = true
 
-		displayName := providerDisplayNames[llm.Name(m.ProviderName)]
+		displayName := llm.ProviderDisplayName(llm.Name(m.ProviderName))
 		if displayName == "" {
 			displayName = m.ProviderName
 		}

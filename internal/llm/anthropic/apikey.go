@@ -24,5 +24,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.Anthropic, llm.ProviderDisplay{Name: "Anthropic", Order: 10})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

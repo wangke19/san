@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/genai-io/san/internal/secret"
@@ -16,18 +17,26 @@ type registryEntry struct {
 
 // Registry manages provider registration and discovery
 type Registry struct {
-	mu      sync.RWMutex
-	entries map[string]registryEntry // key: "provider:authMethod"
+	mu              sync.RWMutex
+	entries         map[string]registryEntry // key: "provider:authMethod"
+	providerDisplay map[Name]ProviderDisplay // provider-level UI presentation
 }
 
 // globalRegistry is the default registry instance
 var globalRegistry = &Registry{
-	entries: make(map[string]registryEntry),
+	entries:         make(map[string]registryEntry),
+	providerDisplay: make(map[Name]ProviderDisplay),
 }
 
 // Register registers a provider with its metadata and factory
 func Register(meta Meta, factory Factory) {
 	globalRegistry.Register(meta, factory)
+}
+
+// RegisterProviderDisplay registers a provider's UI presentation (display name and order).
+// Call once per provider package — typically alongside the first Register() call.
+func RegisterProviderDisplay(provider Name, pd ProviderDisplay) {
+	globalRegistry.RegisterProviderDisplay(provider, pd)
 }
 
 // Unregister removes a provider/auth-method entry from the global registry.
@@ -43,6 +52,13 @@ func (r *Registry) Register(meta Meta, factory Factory) {
 		meta:    meta,
 		factory: factory,
 	}
+}
+
+// RegisterProviderDisplay registers a provider's UI presentation.
+func (r *Registry) RegisterProviderDisplay(provider Name, pd ProviderDisplay) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providerDisplay[provider] = pd
 }
 
 // Unregister removes a provider/auth-method entry from the registry.
@@ -152,4 +168,48 @@ func (r *Registry) GetProvidersWithStatus(store *Store) map[Name][]Info {
 	}
 
 	return result
+}
+
+// ProvidersByOrder returns unique provider names sorted by their Order field.
+func ProvidersByOrder() []Name {
+	return globalRegistry.ProvidersByOrder()
+}
+
+// ProvidersByOrder returns unique provider names sorted by their Order field.
+func (r *Registry) ProvidersByOrder() []Name {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type providerOrder struct {
+		name  Name
+		order int
+	}
+	providers := make([]providerOrder, 0, len(r.providerDisplay))
+	for name, pd := range r.providerDisplay {
+		providers = append(providers, providerOrder{name, pd.Order})
+	}
+	sort.Slice(providers, func(i, j int) bool {
+		return providers[i].order < providers[j].order
+	})
+	result := make([]Name, len(providers))
+	for i, p := range providers {
+		result[i] = p.name
+	}
+	return result
+}
+
+// ProviderDisplayName returns the provider-level display name for a provider.
+func ProviderDisplayName(p Name) string {
+	return globalRegistry.ProviderDisplayName(p)
+}
+
+// ProviderDisplayName returns the provider-level display name for a provider.
+func (r *Registry) ProviderDisplayName(p Name) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if pd, ok := r.providerDisplay[p]; ok {
+		return pd.Name
+	}
+	return string(p)
 }

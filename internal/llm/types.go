@@ -34,12 +34,19 @@ const (
 	AuthBedrock AuthMethod = "bedrock"
 )
 
-// Meta contains static metadata about a provider
+// Meta contains static metadata about a provider auth method.
 type Meta struct {
 	Provider    Name
 	AuthMethod  AuthMethod
 	EnvVars     []string // Required environment variables
-	DisplayName string
+	DisplayName string   // per-authMethod name (e.g. "Direct API", "Vertex AI")
+}
+
+// ProviderDisplay describes how a provider is presented in the UI,
+// shared across all of its auth methods.
+type ProviderDisplay struct {
+	Name  string // UI display name (e.g. "Anthropic")
+	Order int    // display order in UI (lower = earlier)
 }
 
 // Key returns a unique key for this provider configuration

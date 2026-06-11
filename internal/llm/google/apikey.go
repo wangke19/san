@@ -14,5 +14,6 @@ var APIKeyMeta = llm.Meta{
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.Google, llm.ProviderDisplay{Name: "Google", Order: 30})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

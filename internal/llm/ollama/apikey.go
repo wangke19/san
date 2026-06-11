@@ -59,5 +59,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the Ollama provider
 func init() {
+	llm.RegisterProviderDisplay(llm.Ollama, llm.ProviderDisplay{Name: "Ollama (Local)", Order: 100})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

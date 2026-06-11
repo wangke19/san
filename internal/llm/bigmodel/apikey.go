@@ -35,5 +35,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 }
 
 func init() {
+	llm.RegisterProviderDisplay(llm.BigModel, llm.ProviderDisplay{Name: "Z.ai (GLM series)", Order: 90})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

@@ -35,5 +35,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.Mimo, llm.ProviderDisplay{Name: "Xiaomi MiMo", Order: 110})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

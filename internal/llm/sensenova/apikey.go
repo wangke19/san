@@ -32,5 +32,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 }
 
 func init() {
+	llm.RegisterProviderDisplay(llm.SenseNova, llm.ProviderDisplay{Name: "SenseNova (商汤)", Order: 50})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

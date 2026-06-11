@@ -24,5 +24,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.OpenAI, llm.ProviderDisplay{Name: "OpenAI", Order: 20})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

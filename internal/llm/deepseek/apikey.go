@@ -35,5 +35,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.DeepSeek, llm.ProviderDisplay{Name: "DeepSeek", Order: 40})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }

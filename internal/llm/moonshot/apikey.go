@@ -35,5 +35,6 @@ func NewAPIKeyClient(ctx context.Context) (llm.Provider, error) {
 
 // init registers the API Key provider
 func init() {
+	llm.RegisterProviderDisplay(llm.Moonshot, llm.ProviderDisplay{Name: "Moonshot", Order: 70})
 	llm.Register(APIKeyMeta, NewAPIKeyClient)
 }
