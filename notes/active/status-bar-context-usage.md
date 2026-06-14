@@ -1,37 +1,43 @@
-# Real-Time Context-Usage Status Bar — Design
+# Status Bar — Real-Time Context Usage
 
-**Date:** 2026-06-14
-**Source PRD:** `status-bar-context-usage-prd.md`
-**Scope:** Full PRD implementation in SAN (Go TUI)
-**Approach:** B — new `internal/app/conv/status_bar.go` module
+Port of the Hermes-authored PRD at [`../../status-bar-context-usage-prd.md`](../../status-bar-context-usage-prd.md):
+a permanent single-line status bar that shows context-window fill as a 10-cell
+bar with 4 color tiers, plus a compressions badge. SAN already implements
+~80% of the plumbing — this plan covers the rendering layer plus a new
+compressions counter.
 
----
+## Context
 
-## 1. Context
+Existing pieces in SAN that the PRD's "backend contract" maps onto:
 
-The PRD describes a Hermes (Python) feature: a permanent status bar showing context-window fill as a 10-cell bar with 4 color tiers, plus a compressions badge. SAN already implements ~80% of the plumbing:
+- **Numerator:** `env.InputTokens` (`internal/app/env.go:31`), updated per LLM
+  response in `OnTokenUsage` (`internal/app/model_agent_events.go:45`).
+- **Denominator:** `kit.GetEffectiveInputLimit()` via `env.CurrentModel`
+  (`internal/app/view.go:246`).
+- **Cost:** `env.ConversationCost`, accumulated in `OnTokenUsage`.
+- **Status line:** `renderModeStatus` → `conv.RenderModeStatus` →
+  `renderModelWithTokens` (`internal/app/conv/message.go:76`) already renders
+  `{model} · {tokens}/{limit} ({pct}%) · {hint}`.
+- **Compact handling:** `OnCompacted` (`internal/app/model_compact.go:39`)
+  calls `env.ResetContextDisplay()`.
+- **Auto-compact trigger:** `NeedsCompaction`
+  (`internal/core/message.go:293`) fires at 95%.
+- **Humanized format:** `kit.FormatTokenCount` exists.
+- **Width-aware rendering:** `RenderModeStatus` already takes `Width`.
 
-- **Numerator:** `env.InputTokens` (`internal/app/env.go:31`), updated per LLM response in `OnTokenUsage` (`internal/app/model_agent_events.go:45`)
-- **Denominator:** `kit.GetEffectiveInputLimit()` via `env.CurrentModel` (`internal/app/view.go:246`)
-- **Cost:** `env.ConversationCost`, accumulated in `OnTokenUsage`
-- **Status line:** `renderModeStatus` → `conv.RenderModeStatus` → `renderModelWithTokens` (`internal/app/conv/message.go:76`) already renders `{model} · {tokens}/{limit} ({pct}%) · {hint}`
-- **Compact handling:** `OnCompacted` (`internal/app/model_compact.go:39`) calls `env.ResetContextDisplay()`
-- **Auto-compact trigger:** `NeedsCompaction` (`internal/core/message.go:293`) fires at 95%
-- **Humanized format:** `kit.FormatTokenCount` exists
-- **Width-aware rendering:** `RenderModeStatus` already takes `Width`
+What's missing: the visual bar, 4-tier color (currently 3 at 85/95),
+compressions counter and badge, responsive segment allocator.
 
-What's missing: the visual bar, 4-tier color (currently 3 at 85/95), compressions counter and badge, responsive segment allocator.
-
-## 2. Decisions (from brainstorming)
+## Decisions
 
 | Decision | Choice | Reason |
 |---|---|---|
 | Scope | Full PRD | All four pieces: bar, tiers, badge, responsive allocator |
-| Auto-compact trigger | Keep 95% | Conservative; "critical" tier becomes a brief flash before compression fires |
-| Color tiers | 4, composed from existing theme tokens | No new theme infrastructure |
-| Architecture | New `status_bar.go` module in `conv/` | Matches existing convention; isolates new logic for testing |
+| Auto-compact trigger | Keep 95% | Conservative; the "critical" tier becomes a brief flash before compression fires |
+| Color tiers | 4, composed from existing theme tokens | No new theme infrastructure (`Success` / `Warning` / `Error` / `Error+Bold`) |
+| Architecture | New `internal/app/conv/status_bar.go` module | Matches existing convention; isolates new logic for testing |
 
-## 3. Architecture
+## Architecture
 
 ```
 agent LLM response ──► OnTokenUsage               (existing)
@@ -59,9 +65,11 @@ conv.RenderModeStatus                             (existing orchestrator)
        └─ AllocateStatusSegments(width)          ← NEW tail-budget allocator
 ```
 
-The new file `internal/app/conv/status_bar.go` owns **only what's new**: the bar, the 4-tier resolver, the badge, and the budget allocator. Existing helpers stay where they are.
+The new file `internal/app/conv/status_bar.go` owns **only what's new**: the
+bar, the 4-tier resolver, the badge, and the budget allocator. Existing
+helpers stay where they are.
 
-## 4. Components
+## Components
 
 ```go
 package conv
@@ -119,9 +127,10 @@ func AllocateStatusSegments(segments []statusSegment, availableWidth int) string
 | §7.5 `🗜️ N` | `RenderCompressionsBadge` |
 | §8.3 priority drop | `AllocateStatusSegments` |
 
-`renderModelWithTokens` in `message.go` shrinks to just `{model} · {status message}` and delegates context/cost to the new module.
+`renderModelWithTokens` in `message.go` shrinks to just
+`{model} · {status message}` and delegates context/cost to the new module.
 
-## 5. Data flow & lifecycle boundaries
+## Data flow & lifecycle boundaries
 
 **New env state** (`internal/app/env.go`):
 
@@ -171,18 +180,23 @@ return conv.RenderModeStatus(conv.OperationModeParams{
 })
 ```
 
-`OperationModeParams` (`internal/app/conv/message.go:32`) gets a `Compressions int` field.
+`OperationModeParams` (`internal/app/conv/message.go:32`) gets a
+`Compressions int` field.
 
-**Lifecycle boundaries (PRD §6.2):** SAN re-renders on every `tea.Msg`, so no new emit logic is needed. The status bar naturally refreshes on:
+**Lifecycle boundaries (PRD §6.2):** SAN re-renders on every `tea.Msg`, so
+no new emit logic is needed. The status bar naturally refreshes on:
+
 - `OnTokenUsage` — after every LLM response ✓
 - `OnCompacted` — after auto/manual compact ✓ (now with increment)
 - `OnTurnEnd` — after every turn boundary ✓
 - Model switch via `SwitchProvider` ✓ (updates `CurrentModel` which feeds `InputLimit`)
 - `/reset` via `ResetTokens` ✓ (now with Compressions zeroed)
 
-**Sentinel handling (PRD §4.3):** SAN does not use a `-1` sentinel — `ResetContextDisplay` zeroes the field. `RenderContextBar` still clamps negatives to 0 defensively as a one-line guard.
+**Sentinel handling (PRD §4.3):** SAN does not use a `-1` sentinel —
+`ResetContextDisplay` zeroes the field. `RenderContextBar` still clamps
+negatives to 0 defensively as a one-line guard.
 
-## 6. Edge cases (PRD §9)
+## Edge cases (PRD §9)
 
 | Case | Behavior in SAN |
 |---|---|
@@ -195,7 +209,7 @@ return conv.RenderModeStatus(conv.OperationModeParams{
 | Post-compact transitional turn | Bar shows `0%` for one frame until next `OnTokenUsage` |
 | Terminal resize | Existing `Width` plumbing handles it; `AllocateStatusSegments` re-evaluates each render |
 
-## 7. Testing
+## Testing
 
 **New file `internal/app/conv/status_bar_test.go`:**
 
@@ -217,9 +231,11 @@ return conv.RenderModeStatus(conv.OperationModeParams{
 - Add `TestRenderModeStatusShowsCompressionsBadgeWhenNonZero`.
 - Add `TestRenderModeStatusHidesBadgeWhenZero`.
 
-Existing tests that should pass unchanged: anything touching `RenderThinkingIndicator`, `RenderOperationModeIndicator`, `renderQueueBadge`, `RenderTurnUsageSummary`.
+Existing tests that should pass unchanged: anything touching
+`RenderThinkingIndicator`, `RenderOperationModeIndicator`,
+`renderQueueBadge`, `RenderTurnUsageSummary`.
 
-## 8. Acceptance criteria (PRD §11)
+## Acceptance criteria (PRD §11)
 
 - [ ] After every assistant turn, bar reflects `env.InputTokens / InputLimit`.
 - [ ] Color flips at exactly 50 / 80 / 95 (80 stays warn, only `>80` is bad).
@@ -231,7 +247,7 @@ Existing tests that should pass unchanged: anything touching `RenderThinkingIndi
 - [ ] `🗜️ N` appears only after the first compact, never at session start.
 - [ ] `go test ./internal/app/...` is green.
 
-## 9. Files touched
+## Files touched
 
 | File | Change |
 |---|---|
