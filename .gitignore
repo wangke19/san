@@ -33,5 +33,3 @@ CLAUDE.local.md
 .autodev/
 /layercheck
 
-# Graphify local cache
-graphify-out/
