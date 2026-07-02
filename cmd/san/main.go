@@ -64,10 +64,16 @@ func init() {
 	rootCmd.AddCommand(helpCmd)
 	rootCmd.SetHelpCommand(helpCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(updateCmd)
 }
 
 func main() {
 	defer func() { _ = log.Sync() }()
+
+	// Clean up any stale backup file from a previous self-update.
+	// On Windows, os.Remove on a running executable's renamed backup
+	// fails, so we clean it on the next launch instead.
+	cleanupUpdateBackup()
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -116,6 +122,20 @@ Non-interactive mode:
 	},
 }
 
+// cleanupUpdateBackup removes any stale .bak file from a previous self-update.
+// On Windows, the running process cannot delete the renamed backup of itself,
+// so we defer cleanup to the next launch.
+func cleanupUpdateBackup() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	backupPath := exe + ".bak"
+	if _, err := os.Stat(backupPath); err == nil {
+		_ = os.Remove(backupPath)
+	}
+}
+
 // readStdin returns piped stdin data, or empty string if stdin is a terminal.
 func readStdin() string {
 	stat, _ := os.Stdin.Stat()
@@ -134,6 +154,25 @@ var versionCmd = &cobra.Command{
 	Short: "Print the version number",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("san version %s\n", version)
+	},
+}
+
+var updateCmd = &cobra.Command{
+	Use:   "update",
+	Short: "Check for san updates and install if available",
+	Long: `Check for available san version updates and install the latest version.
+
+Checks the latest release on GitHub and upgrades the san binary if a newer
+version is available.
+
+The current installed version is read from the binary itself. If a newer
+release is found, the binary is automatically downloaded and replaced.
+
+Example:
+  san update`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSelfUpdate(cmd.Context())
 	},
 }
 
@@ -174,6 +213,7 @@ Session:
 Commands:
   version      Print the version number
   agent run    Run a headless agent
+  update       Check for san updates and install if available
   help         Show this help message
 
 Keybindings:
