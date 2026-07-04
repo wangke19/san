@@ -5,6 +5,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"go.uber.org/zap"
@@ -21,6 +23,7 @@ import (
 	"github.com/genai-io/san/internal/mcp"
 	"github.com/genai-io/san/internal/persona"
 	"github.com/genai-io/san/internal/reminder"
+	"github.com/genai-io/san/internal/reviewer"
 	"github.com/genai-io/san/internal/session/transcript"
 	"github.com/genai-io/san/internal/setting"
 	"github.com/genai-io/san/internal/subagent"
@@ -114,6 +117,21 @@ func (m *model) buildAgentParams() agent.BuildParams {
 		})
 	}
 
+	var ar setting.AutoReviewSettings
+	if snap := m.services.Setting.Snapshot(); snap != nil {
+		ar = snap.AutoReview
+	}
+	reviewerProvider, reviewerModelID := m.resolveReviewerModel(ar.Model)
+	rev := reviewer.New(reviewerProvider, reviewerModelID)
+	if ar.SystemPromptFile != "" {
+		if b, err := os.ReadFile(ar.SystemPromptFile); err == nil {
+			rev.SetSystemPrompt(string(b))
+		} else {
+			log.Logger().Warn("auto-review systemPromptFile unreadable; using built-in rubric",
+				zap.String("file", ar.SystemPromptFile), zap.Error(err))
+		}
+	}
+
 	return agent.BuildParams{
 		Provider:       m.env.LLMProvider,
 		ModelID:        m.env.GetModelID(),
@@ -132,14 +150,22 @@ func (m *model) buildAgentParams() agent.BuildParams {
 		MCPTools:      mcpTools,
 		HookEngine:    m.services.Hook,
 
-		InteractionFunc: func(ctx context.Context, req *tool.QuestionRequest) (*tool.QuestionResponse, error) {
-			return m.conv.ProgressHub.Ask(ctx, 0, req)
+		AskUser: func(ctx context.Context, req *tool.QuestionRequest) (*tool.QuestionResponse, error) {
+			return m.conv.AgentToUI.Ask(ctx, 0, req)
 		},
-		ToolProgress: func(toolCallID string, msg string) {
-			m.conv.ProgressHub.SendForToolCall(toolCallID, msg)
+		ToolActivity: func(toolCallID string, msg string) {
+			m.conv.AgentToUI.SendForToolCall(toolCallID, msg)
+		},
+		BashPromptResponder: func(ctx context.Context) tool.BashPromptResponder {
+			// Interactive answering is opt-in: without it, bash stays on the
+			// normal non-tty path even in auto-review.
+			if !ar.AnswerBashPrompts || m.env.OperationMode != setting.ModeAutoReview {
+				return nil
+			}
+			return bashPromptResponder{model: m, reviewer: rev}
 		},
 
-		PermissionDecider: func(name string, args map[string]any) agent.PermDecisionResult {
+		PermissionRules: func(name string, args map[string]any) agent.PermDecisionResult {
 			decision := m.services.Setting.HasPermissionToUseTool(name, args, m.env.SessionPermissions)
 			mode := m.env.SessionMode()
 			input := marshalPermInput(args)
@@ -163,10 +189,67 @@ func (m *model) buildAgentParams() agent.BuildParams {
 					ToolName:    name,
 					Description: decision.Reason,
 					RequestID:   core.NewMessageID(),
+					Reviewable:  decision.Reviewable,
 				}
 			}
 		},
+
+		PermissionReview: func(ctx context.Context, name string, args map[string]any, reason string) agent.PermReviewResult {
+			// Only auto-review mode delegates gray-zone prompts to the judge.
+			if m.env.OperationMode != setting.ModeAutoReview {
+				return agent.PermReviewResult{}
+			}
+			// Defense in depth: the judge may never approve a floored action,
+			// even if one somehow reaches it.
+			if setting.BypassImmuneReason(name, args) != "" {
+				return agent.PermReviewResult{}
+			}
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			verdict, err := rev.Permission(ctx, reviewer.Request{
+				ToolName: name, Args: args, Reason: reason, CWD: m.env.CWD,
+			})
+			log.Logger().Debug("auto-review verdict",
+				zap.String("tool", name),
+				zap.Bool("allow", err == nil && verdict.Allow),
+				zap.String("reason", verdict.Reason),
+				zap.Error(err))
+			if err != nil || !verdict.Allow {
+				return agent.PermReviewResult{} // fail closed → escalate to human
+			}
+			if rec != nil {
+				rec.RecordPermissionDecided(transcript.PermissionRecord{
+					Tool: name, Input: marshalPermInput(args), Decision: permDecisionFor(true),
+					Source: transcript.PermissionSourceReviewer, Reason: verdict.Reason, Mode: m.env.SessionMode(),
+				})
+			}
+			// Cache the approval as a session grant so an identical repeat hits the
+			// static fast path instead of the judge, shrinking the gray zone over
+			// the session. Safe to write here: the agent goroutine is the only
+			// mutator (the human-approval writer runs only while it is parked).
+			m.env.SessionPermissions.AllowPattern(setting.BuildRule(name, args))
+			m.reviewerApprovals.Add(1)
+			return agent.PermReviewResult{Allow: true, Reason: "auto-review: " + verdict.Reason}
+		},
 	}
+}
+
+// resolveReviewerModel picks the provider and model for the auto-review judge.
+// A "vendor/model" ref (e.g. "anthropic/claude-haiku-4-5") routes to that
+// connected provider; a bare id stays on the session provider; empty uses the
+// session model. An unresolvable vendor falls back to the session model.
+func (m *model) resolveReviewerModel(ref string) (llm.Provider, string) {
+	if ref == "" {
+		return m.env.LLMProvider, m.env.GetModelID()
+	}
+	if vendor, id, ok := llm.ParseVendorModel(ref); ok {
+		if p, err := llm.NewProviderPool(m.services.LLM.Store()).Resolve(context.Background(), vendor); err == nil {
+			return p, id
+		}
+		log.Logger().Warn("auto-review model vendor unavailable; using session model", zap.String("model", ref))
+		return m.env.LLMProvider, m.env.GetModelID()
+	}
+	return m.env.LLMProvider, ref
 }
 
 // marshalPermInput serializes the tool args for a permission audit record.
@@ -224,10 +307,10 @@ func (m *model) ensureAgentSession(pendingSend string) (tea.Cmd, error) {
 
 	cmds := []tea.Cmd{
 		conv.DrainAgentOutbox(m.services.Agent.Outbox()),
-		conv.PollPermBridge(m.services.Agent.PermissionBridge()),
+		conv.PollPermGate(m.services.Agent.PermissionGate()),
 	}
-	if m.conv.ProgressHub != nil {
-		cmds = append(cmds, m.conv.ProgressHub.Check())
+	if m.conv.AgentToUI != nil {
+		cmds = append(cmds, m.conv.AgentToUI.Check())
 	}
 	return tea.Batch(cmds...), nil
 }
@@ -297,7 +380,7 @@ func (m *model) StopAgentSession() {
 }
 
 // ============================================================
-// Agent outbox and permission bridge
+// Agent outbox and permission gate
 // ============================================================
 
 func (m *model) ContinueOutbox() tea.Cmd {
@@ -307,7 +390,7 @@ func (m *model) ContinueOutbox() tea.Cmd {
 	return conv.DrainAgentOutbox(m.services.Agent.Outbox())
 }
 
-func (m *model) OnPermBridgeRequest(req *conv.PermBridgeRequest) tea.Cmd {
+func (m *model) OnPermGateRequest(req *conv.PermGateRequest) tea.Cmd {
 	m.services.Agent.SetPendingPermission(req)
 	if req == nil {
 		return nil
@@ -374,7 +457,7 @@ func permDetail(req *perm.PermissionRequest) json.RawMessage {
 // Agent tool configuration
 // ============================================================
 
-func (m *model) preparePermissionRequest(req *conv.PermBridgeRequest) *perm.PermissionRequest {
+func (m *model) preparePermissionRequest(req *conv.PermGateRequest) *perm.PermissionRequest {
 	if resolved, ok := tool.Get(req.ToolName); ok {
 		if pat, ok := resolved.(tool.PermissionAwareTool); ok {
 			if rich, err := pat.PreparePermission(context.Background(), req.Input, m.env.CWD); err == nil && rich != nil {

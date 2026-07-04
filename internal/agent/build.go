@@ -37,17 +37,26 @@ type BuildParams struct {
 	DisabledTools map[string]bool
 	MCPTools      []core.Tool
 
-	PermissionDecider PermDecisionFunc
-	HookEngine        hook.Handler
-	InteractionFunc   tool.InteractionFunc
-	ToolProgress      func(toolCallID string, msg string)
+	// PermissionRules and PermissionReview are the two stages of the
+	// pre-execution permission gate: the rules stage applies the static rules
+	// (permit/reject/prompt); the review stage is the LLM auto-review consulted
+	// only on a gray-zone prompt (AutoReview.Permission).
+	PermissionRules  PermDecisionFunc
+	PermissionReview PermReviewFunc
+	HookEngine       hook.Handler
+	AskUser          tool.AskUserFunc
+	ToolActivity     func(toolCallID string, msg string)
+	// BashPromptResponder answers prompts a command raises *while it runs*
+	// (AutoReview.BashPrompt plus the masked secret input) — a separate concern
+	// from the pre-execution gate above.
+	BashPromptResponder tool.BashPromptResponderProvider
 
 	// OnEvent observes every agent lifecycle event synchronously, alongside
 	// outbox delivery. Used by the trace recorder; nil leaves recording off.
 	OnEvent func(core.Event)
 }
 
-func buildAgent(p BuildParams) (core.Agent, *PermissionBridge, error) {
+func buildAgent(p BuildParams) (core.Agent, *PermissionGate, error) {
 	if p.Provider == nil {
 		return nil, nil, fmt.Errorf("no LLM provider configured")
 	}
@@ -77,13 +86,17 @@ func buildAgent(p BuildParams) (core.Agent, *PermissionBridge, error) {
 		AgentDirectory: p.AgentDirectory,
 	}).Tools()
 	var adaptOpts []tool.AdaptOption
-	if p.InteractionFunc != nil {
-		adaptOpts = append(adaptOpts, tool.WithInteraction(p.InteractionFunc))
+	if p.AskUser != nil {
+		adaptOpts = append(adaptOpts, tool.WithAskUser(p.AskUser))
 	}
-	if p.ToolProgress != nil {
-		adaptOpts = append(adaptOpts, tool.WithToolProgress(p.ToolProgress))
+	if p.ToolActivity != nil {
+		adaptOpts = append(adaptOpts, tool.WithToolActivity(p.ToolActivity))
 	}
-	pb := NewPermissionBridge(p.PermissionDecider)
+	if p.BashPromptResponder != nil {
+		adaptOpts = append(adaptOpts, tool.WithBashPromptResponderProvider(p.BashPromptResponder))
+	}
+	pg := NewPermissionGate(p.PermissionRules)
+	pg.SetReviewer(p.PermissionReview)
 	var ag core.Agent
 	adaptOpts = append(adaptOpts, tool.WithMessagesGetterProvider(func() []core.Message {
 		if ag == nil {
@@ -114,11 +127,11 @@ func buildAgent(p BuildParams) (core.Agent, *PermissionBridge, error) {
 		ID:          "main",
 		LLM:         client,
 		System:      sys,
-		Tools:       tool.WithPreToolUseAndPermission(tools, p.HookEngine, pb),
+		Tools:       tool.WithPreToolUseAndPermission(tools, p.HookEngine, pg),
 		CompactFunc: compactFunc,
 		CWD:         p.CWD,
 		OnEvent:     p.OnEvent,
 	})
 
-	return ag, pb, nil
+	return ag, pg, nil
 }

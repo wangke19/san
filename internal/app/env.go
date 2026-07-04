@@ -152,6 +152,8 @@ func (m *env) OperationModeName() string {
 	switch m.OperationMode {
 	case setting.ModeAutoAccept:
 		return "auto"
+	case setting.ModeAutoReview:
+		return "autoReview"
 	case setting.ModeBypassPermissions:
 		return "bypassPermissions"
 	default:
@@ -167,11 +169,22 @@ func (m *env) ResetSessionPermissions() {
 	m.SessionPermissions.Mode = setting.ModeNormal
 }
 
-func (m *env) ApplyAutoAcceptPermissions(cwd string) {
-	m.SessionPermissions.Mode = setting.ModeAutoAccept
+// applyEditPosture grants the accept-edits posture — edits/writes auto-approved,
+// working dir trusted — under the given mode. Shared by accept-edits and
+// auto-review (which additionally routes non-edit prompts to the review agent).
+func (m *env) applyEditPosture(mode setting.OperationMode, cwd string) {
+	m.SessionPermissions.Mode = mode
 	m.SessionPermissions.AllowAllEdits = true
 	m.SessionPermissions.AllowAllWrites = true
 	m.SessionPermissions.AddWorkingDirectory(cwd)
+}
+
+func (m *env) ApplyAutoAcceptPermissions(cwd string) {
+	m.applyEditPosture(setting.ModeAutoAccept, cwd)
+}
+
+func (m *env) ApplyAutoReviewPermissions(cwd string) {
+	m.applyEditPosture(setting.ModeAutoReview, cwd)
 }
 
 func (m *env) ApplyBypassPermissions() {
@@ -214,6 +227,10 @@ func (m *env) ApplyModePermissions(cwd string) {
 	if m.OperationMode == setting.ModeBypassPermissions {
 		m.ApplyBypassPermissions()
 	}
+
+	if m.OperationMode == setting.ModeAutoReview {
+		m.ApplyAutoReviewPermissions(cwd)
+	}
 }
 
 func (m *env) ApplyDefaultPermissionMode(mode string, cwd string, allowBypass bool) {
@@ -234,6 +251,8 @@ func (m *env) SessionMode() string {
 	switch m.OperationMode {
 	case setting.ModeAutoAccept:
 		return "auto-accept"
+	case setting.ModeAutoReview:
+		return "auto-review"
 	default:
 		return "normal"
 	}

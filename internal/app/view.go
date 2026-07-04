@@ -58,10 +58,10 @@ func (m *model) viewString() string {
 // isDockedModal reports whether the active overlay docks above the input area
 // — rendered between separators with the task tracker still visible — rather
 // than taking over the full screen like the slash-command pickers do. Only
-// the Question and Approval modals dock.
+// the Question, Approval, and secret-entry modals dock.
 func isDockedModal(ov overlayPanel) bool {
 	switch ov.(type) {
-	case *conv.QuestionPrompt, *input.ApprovalModel:
+	case *conv.QuestionPrompt, *input.ApprovalModel, *input.SecretPromptModel:
 		return true
 	}
 	return false
@@ -255,6 +255,10 @@ func (m model) renderModeStatus() string {
 	if status := m.services.Hook.CurrentStatusMessage(); status != "" {
 		modelName = status
 	}
+	reviewApprovals := 0
+	if m.reviewerApprovals != nil {
+		reviewApprovals = int(m.reviewerApprovals.Load())
+	}
 	return conv.RenderModeStatus(conv.OperationModeParams{
 		Mode:             m.env.OperationMode,
 		InputTokens:      m.env.InputTokens,
@@ -268,6 +272,7 @@ func (m model) renderModeStatus() string {
 		ThinkingEffort:   thinkingEffort,
 		ShowThinking:     showThinking,
 		QueueCount:       m.userInput.Queue.Len(),
+		ReviewApprovals:  reviewApprovals,
 	})
 }
 
@@ -313,7 +318,7 @@ func (m model) messageRenderParams() conv.RenderContext {
 
 		// Decorations
 		AgentColors:  m.agentColors(),
-		TaskProgress: m.conv.TaskProgress,
+		TaskActivity: m.conv.TaskActivity,
 		TaskOwnerMap: buildTaskOwnerMap(m.services.Tracker.List()),
 
 		// Modal interlock

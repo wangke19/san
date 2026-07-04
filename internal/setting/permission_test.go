@@ -286,6 +286,14 @@ func Test_isDestructiveCommand(t *testing.T) {
 		{"git branch -D", "git branch -D feature", true},
 		{"chmod 777", "chmod 777 /tmp/file", true},
 
+		// Privilege escalation & persistence
+		{"sudo", "sudo apt-get install foo", true},
+		{"sudo rm", "sudo rm -rf /", true},
+		{"crontab", "crontab -e", true},
+		{"chsh", "chsh -s /bin/zsh", true},
+		{"visudo", "visudo", true},
+		{"launchctl load", "launchctl load ~/Library/LaunchAgents/x.plist", true},
+
 		// Path-qualified commands (should normalize to base command)
 		{"rm with full path", "/bin/rm -rf /tmp/test", true},
 		{"git with full path", "/usr/bin/git reset --hard HEAD", true},
@@ -1008,12 +1016,15 @@ func TestResolveHookAllow(t *testing.T) {
 }
 
 func TestOperationModeNext(t *testing.T) {
-	// Normal → AutoAccept → Normal
+	// Normal → AutoAccept → AutoReview → Normal
 	if ModeNormal.Next() != ModeAutoAccept {
 		t.Errorf("Normal.Next() = %v, want AutoAccept", ModeNormal.Next())
 	}
-	if ModeAutoAccept.Next() != ModeNormal {
-		t.Errorf("AutoAccept.Next() = %v, want Normal", ModeAutoAccept.Next())
+	if ModeAutoAccept.Next() != ModeAutoReview {
+		t.Errorf("AutoAccept.Next() = %v, want AutoReview", ModeAutoAccept.Next())
+	}
+	if ModeAutoReview.Next() != ModeNormal {
+		t.Errorf("AutoReview.Next() = %v, want Normal", ModeAutoReview.Next())
 	}
 	// BypassPermissions is not in cycle — goes back to Normal
 	if ModeBypassPermissions.Next() != ModeNormal {

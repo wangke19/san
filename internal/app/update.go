@@ -8,7 +8,7 @@
 //	update_submit.go         submit + provider turn + skill invocation
 //	update_command.go        slash command deps + execution
 //	update_modal.go          operation mode + question modal protocol
-//	update_approval.go       permission approval flow + bridge response
+//	update_approval.go       permission approval flow + gate response
 //	update_input_effects.go  stream cancel, tool-call cancel, image
 //	                         paste, quit-with-cancel
 package app
@@ -55,6 +55,7 @@ func (m *model) overlayPanels() []overlayPanel {
 	return []overlayPanel{
 		m.conv.Modal.Question, // docked modals (rendered between separators)
 		&m.userInput.Approval,
+		&m.userInput.Secret,
 		&m.userInput.Provider.Selector, // fullscreen slash-command pickers
 		&m.userInput.Tool,
 		&m.userInput.Skill.Selector,
@@ -194,8 +195,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case conv.QuestionResponseMsg:
 		return m, m.handleQuestionResponse(msg)
+	case input.SecretPromptResponseMsg:
+		return m, m.handleSecretPromptResponse(msg)
 	case input.ApprovalResponseMsg:
-		return m, m.handlePermBridgeDecision(permissionDecision{
+		return m, m.handlePermGateDecision(permissionDecision{
 			Approved: msg.Approved, AllowAll: msg.AllowAll, Persist: msg.Persist, Request: msg.Request,
 		})
 	case stopHookResultMsg:

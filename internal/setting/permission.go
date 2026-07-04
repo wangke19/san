@@ -16,6 +16,10 @@ import (
 type PermissionDecision struct {
 	Behavior perm.Decision
 	Reason   string // e.g. "deny rule: Read(**/.env)", "bypass-immune: .git/ directory"
+	// Reviewable marks a Prompt the auto-review agent may judge. It is set only
+	// for the auto-review gray-zone default — never for bypass-immune or
+	// ask-rule prompts — so those always escalate to the human.
+	Reviewable bool
 }
 
 // decide is a shorthand for building a PermissionDecision.
@@ -120,6 +124,15 @@ func ModeDefault(toolName string, mode OperationMode) PermissionDecision {
 			return decide(perm.Permit, "mode: accept edits")
 		}
 		return decide(perm.Prompt, "mode: accept edits requires confirmation")
+	case ModeAutoReview:
+		// Edits are auto-approved like accept-edits; non-edit tools fall to a
+		// reviewable Prompt — the gray zone the review agent judges.
+		if perm.IsEditTool(toolName) {
+			return decide(perm.Permit, "mode: auto review (edits)")
+		}
+		d := decide(perm.Prompt, "mode: auto review requires confirmation")
+		d.Reviewable = true
+		return d
 	case ModeReadOnly:
 		return decide(perm.Reject, "mode: read-only")
 	case ModeDontAsk:

@@ -24,21 +24,23 @@ func PopSideEffect(toolCallID string) any {
 	return val
 }
 
-// InteractionFunc handles interactive tool requests (e.g. AskUserQuestion).
-// The TUI layer provides this via ProgressHub.Ask().
-type InteractionFunc func(ctx context.Context, req *QuestionRequest) (*QuestionResponse, error)
+// AskUserFunc poses a structured question to the user and returns their answer.
+// The AskUserQuestion tool calls it mid-execution; the TUI layer supplies the
+// implementation via AgentToUI.Ask().
+type AskUserFunc func(ctx context.Context, req *QuestionRequest) (*QuestionResponse, error)
 
 // AdaptOption configures tool adaptation behavior.
 type AdaptOption func(*adaptConfig)
 
 type adaptConfig struct {
-	askFn          InteractionFunc
-	messagesGetter MessagesGetter
-	progressFn     func(toolCallID string, msg string)
+	askFn           AskUserFunc
+	messagesGetter  MessagesGetter
+	activityFn      func(toolCallID string, msg string)
+	promptResponder BashPromptResponderProvider
 }
 
-// WithInteraction sets the handler for interactive tools.
-func WithInteraction(fn InteractionFunc) AdaptOption {
+// WithAskUser sets the handler the AskUserQuestion tool uses to ask the user.
+func WithAskUser(fn AskUserFunc) AdaptOption {
 	return func(c *adaptConfig) { c.askFn = fn }
 }
 
@@ -48,9 +50,15 @@ func WithMessagesGetterProvider(fn MessagesGetter) AdaptOption {
 	return func(c *adaptConfig) { c.messagesGetter = fn }
 }
 
-// WithToolProgress sets the handler for progress messages emitted by agent-like tools.
-func WithToolProgress(fn func(toolCallID string, msg string)) AdaptOption {
-	return func(c *adaptConfig) { c.progressFn = fn }
+// WithToolActivity sets the handler for activity lines emitted by agent-like tools.
+func WithToolActivity(fn func(toolCallID string, msg string)) AdaptOption {
+	return func(c *adaptConfig) { c.activityFn = fn }
+}
+
+// WithBashPromptResponderProvider sets the responder provider for tools that can
+// safely handle interactive prompts during execution.
+func WithBashPromptResponderProvider(fn BashPromptResponderProvider) AdaptOption {
+	return func(c *adaptConfig) { c.promptResponder = fn }
 }
 
 // AdaptTool wraps a legacy Tool as a core.Tool with a dynamic CWD resolver.
@@ -76,7 +84,7 @@ func AdaptToolRegistry(schemas []core.ToolSchema, cwd func() string, opts ...Ada
 	var adapted []core.Tool
 	for name, schema := range schemaByName {
 		if t, ok := Get(name); ok {
-			adapted = append(adapted, &toolAdapter{inner: t, schema: schema, cwd: cwd, askFn: cfg.askFn, messagesGetter: cfg.messagesGetter, progressFn: cfg.progressFn})
+			adapted = append(adapted, &toolAdapter{inner: t, schema: schema, cwd: cwd, askFn: cfg.askFn, messagesGetter: cfg.messagesGetter, activityFn: cfg.activityFn, promptResponder: cfg.promptResponder})
 		}
 	}
 	return core.NewTools(adapted...)
@@ -84,12 +92,13 @@ func AdaptToolRegistry(schemas []core.ToolSchema, cwd func() string, opts ...Ada
 
 // toolAdapter wraps a legacy Tool as a core.Tool.
 type toolAdapter struct {
-	inner          Tool
-	schema         core.ToolSchema
-	cwd            func() string
-	askFn          InteractionFunc
-	messagesGetter MessagesGetter
-	progressFn     func(toolCallID string, msg string)
+	inner           Tool
+	schema          core.ToolSchema
+	cwd             func() string
+	askFn           AskUserFunc
+	messagesGetter  MessagesGetter
+	activityFn      func(toolCallID string, msg string)
+	promptResponder BashPromptResponderProvider
 }
 
 func (a *toolAdapter) Name() string            { return a.inner.Name() }
@@ -104,10 +113,13 @@ func (a *toolAdapter) Execute(ctx context.Context, input map[string]any) (string
 	if a.messagesGetter != nil {
 		ctx = WithMessagesGetter(ctx, a.messagesGetter)
 	}
-	if IsAgentToolName(a.inner.Name()) && a.progressFn != nil {
+	if a.promptResponder != nil {
+		ctx = ContextWithBashPromptResponderProvider(ctx, a.promptResponder)
+	}
+	if IsAgentToolName(a.inner.Name()) && a.activityFn != nil {
 		if callID := core.ToolCallIDFromContext(ctx); callID != "" {
-			input["_onProgress"] = ProgressFunc(func(msg string) {
-				a.progressFn(callID, msg)
+			input["_onActivity"] = ActivityFunc(func(msg string) {
+				a.activityFn(callID, msg)
 			})
 		}
 	}

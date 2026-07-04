@@ -45,6 +45,26 @@ type Data struct {
 	// SelfLearn toggles + tunes the self-learning loop (per-turn background
 	// review of memory and skills). Both arms are off by default (opt-in).
 	SelfLearn SelfLearnSettings `json:"selfLearn,omitempty"`
+	// AutoReview tunes the auto-review permission judge (model + rubric).
+	AutoReview AutoReviewSettings `json:"autoReview,omitempty"`
+}
+
+// AutoReviewSettings tunes the auto-review permission judge. Both fields are
+// optional; empty keeps the built-in defaults (session model + built-in rubric).
+type AutoReviewSettings struct {
+	// Model overrides the model used for review decisions. A bare id (e.g.
+	// "claude-haiku-4-5") stays on the session provider; a "vendor/model" ref
+	// (e.g. "anthropic/claude-haiku-4-5") routes to that connected provider.
+	// Empty uses the session model.
+	Model string `json:"model,omitempty"`
+	// SystemPromptFile replaces the built-in review rubric with the contents of
+	// the named file. Empty uses the built-in rubric.
+	SystemPromptFile string `json:"systemPromptFile,omitempty"`
+	// AnswerBashPrompts enables interactive answering: in auto-review, bash runs
+	// on a pseudo-terminal so the reviewer can answer the prompts a command
+	// raises (and route password prompts to a masked input). Off by default —
+	// leaving it off keeps every bash command on the normal, non-tty path.
+	AnswerBashPrompts bool `json:"answerBashPrompts,omitempty"`
 }
 
 // SelfLearnSettings configures the two independent self-learning arms.
@@ -288,17 +308,21 @@ const (
 	ModeBypassPermissions               // allow all (bypass-immune checks still apply)
 	ModeDontAsk                         // convert ask → deny (never prompt)
 	ModeReadOnly                        // safe tools only; everything else denied (subagent explore)
+	ModeAutoReview                      // auto-approve edits; delegate the rest to the review agent
 )
 
 // allModes lists the modes that the user can cycle through with the mode toggle.
-// BypassPermissions and DontAsk are entered explicitly, not via cycling.
-var cycleModes = []OperationMode{ModeNormal, ModeAutoAccept}
-var cycleModesWithBypass = []OperationMode{ModeNormal, ModeAutoAccept, ModeBypassPermissions}
+// BypassPermissions is only reachable when explicitly enabled; DontAsk and
+// ReadOnly are entered programmatically (headless subagents), not via cycling.
+var cycleModes = []OperationMode{ModeNormal, ModeAutoAccept, ModeAutoReview}
+var cycleModesWithBypass = []OperationMode{ModeNormal, ModeAutoAccept, ModeAutoReview, ModeBypassPermissions}
 
 func (m OperationMode) String() string {
 	switch m {
 	case ModeAutoAccept:
 		return "accept edits"
+	case ModeAutoReview:
+		return "auto review"
 	case ModeBypassPermissions:
 		return "bypass permissions"
 	case ModeDontAsk:
@@ -315,6 +339,8 @@ func OperationModeFromString(mode string) OperationMode {
 	switch mode {
 	case "acceptEdits", "accept-edits", "autoAccept", "auto-accept":
 		return ModeAutoAccept
+	case "autoReview", "auto-review", "review":
+		return ModeAutoReview
 	case "bypassPermissions", "bypass-permissions", "bypass":
 		return ModeBypassPermissions
 	case "dontAsk", "dont-ask":

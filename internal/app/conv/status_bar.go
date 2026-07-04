@@ -229,13 +229,14 @@ type OperationModeParams struct {
 	ThinkingEffort   string
 	ShowThinking     bool
 	QueueCount       int
+	ReviewApprovals  int // auto-review approvals this session, shown next to the mode
 }
 
 // RenderModeStatus renders the combined mode status line.
 func RenderModeStatus(params OperationModeParams) string {
 	var leftParts []string
 
-	if modeStatus := RenderOperationModeIndicator(params.Mode); modeStatus != "" {
+	if modeStatus := RenderOperationModeIndicator(params.Mode, params.ReviewApprovals); modeStatus != "" {
 		leftParts = append(leftParts, modeStatus)
 	}
 
@@ -339,8 +340,8 @@ func compactStatusHint(percent float64) string {
 	}
 }
 
-// RenderOperationModeIndicator returns the mode status indicator for auto-accept or bypass mode.
-func RenderOperationModeIndicator(mode setting.OperationMode) string {
+// RenderOperationModeIndicator returns the mode status indicator for auto-accept, auto-review, or bypass mode.
+func RenderOperationModeIndicator(mode setting.OperationMode, reviewApprovals int) string {
 	var icon, label string
 	var clr kit.AdaptiveColor
 
@@ -349,12 +350,20 @@ func RenderOperationModeIndicator(mode setting.OperationMode) string {
 		icon = "⏵⏵"
 		label = " accept edits on"
 		clr = kit.CurrentTheme.Success
+	case setting.ModeAutoReview:
+		icon = "⏵⏵"
+		label = " auto review on"
+		clr = kit.CurrentTheme.Warning
 	case setting.ModeBypassPermissions:
 		icon = "⏵⏵"
 		label = " bypass permissions on"
 		clr = kit.CurrentTheme.Error
 	default:
 		return ""
+	}
+
+	if mode == setting.ModeAutoReview && reviewApprovals > 0 {
+		label += fmt.Sprintf(" · %d approved", reviewApprovals)
 	}
 
 	style := lipgloss.NewStyle().Foreground(clr)
